@@ -1,0 +1,40 @@
+# 复制为 config.toml 后填写；已有配置可直接使用。
+# 相对下载路径以本配置文件所在目录为基准。
+download_root = "~/Downloads/media-hunter"
+
+[network]
+proxy = "http://127.0.0.1:7897" # 留空表示直连，也支持 socks5://...
+timeout = 30                  # 每次网络操作的超时秒数
+retries = 3                   # 最大尝试次数（包含首次），1–10
+
+[sites.e621]
+username = ""
+api_key = ""
+# user_agent = "media-hunter-mcp/0.2 (by your-e621-username)"
+# mirror_base = "https://your-trusted-proxy.example/e621"
+# request_interval = 0.5
+# download_concurrency = 4
+
+[sites.rule34]
+# 在 https://rule34.xxx/index.php?page=account&s=options 生成。
+user_id = ""
+api_key = ""
+# request_interval = 1.0
+
+[sites.ehentai]
+cookie = "" # ipb_member_id=...; ipb_pass_hash=...; igneous=...
+use_exhentai = false # true 时必须有可访问 ExHentai 的 Cookie
+# mirror_base = "https://your-trusted-proxy.example"
+# request_interval = 3.0
+# download_delay = 3.0 # 各文件开始处理的间隔秒数
+# download_concurrency = 2
+# 下载的是图片页实际提供的图像，不主动消耗原图下载额度。
+
+[sites.pixiv]
+refresh_token = ""
+ugoira_format = "gif" # gif / mp4 / zip；合成可安装 uv sync --extra animation
+# ffmpeg_path = "C:/Tools/ffmpeg/bin/ffmpeg.exe"
+# api_base = "https://app-api.pixiv.net"
+# oauth_base = "https://oauth.secure.pixiv.net"
+# image_mirror = "https://your-trusted-image-proxy.example"
+# request_interval = 1.0
