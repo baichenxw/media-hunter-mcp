@@ -117,8 +117,6 @@ uv run --extra animation python tests/live_smoke.py
 
 联网检查会下载 e621/Pixiv 的 safe 小样、尝试 E-Hentai Non-H 小样；rule34 只检查搜索、详情与 CDN HEAD。报告和小样写入 `.validation/`，不写入日常下载根目录。
 
-本次验证的具体结果与限制见 [重构说明](docs/refactor-2026-09-09.md)。`docs/superpowers` 保留旧版设计记录，不代表当前实现。
-
 代码结构：`server.py` 仅处理 MCP 接入，`cli.py` 提供命令行；`service.py` 编排业务；`sites/` 负责站点协议；`network.py` 管理请求；`downloader.py` 管理落盘与合成。新增站点时实现 `SiteAdapter` 并注册到 `MediaService`。
 
 ## 许可证

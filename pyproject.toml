@@ -34,7 +34,7 @@ build-backend = "hatchling.build"
 packages = ["src/media_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/README.md", "/LICENSE", "/config.example.toml", "/pyproject.toml", "/uv.lock", "/docs/refactor-2026-09-09.md"]
+include = ["/src", "/tests", "/README.md", "/LICENSE", "/config.example.toml", "/pyproject.toml", "/uv.lock"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
