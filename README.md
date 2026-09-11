@@ -156,5 +156,3 @@ uv run --extra animation python tests/live_smoke.py
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。
-
-实际凭证只填写在本地 `config.toml` 中；该文件、部署资料、备份和验证产物均已加入 `.gitignore`。公开仓库仅提供凭证为空的 `config.example.toml`。
