@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次获取项目：
+以下使用 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次获取项目：
 
 ```powershell
 git clone https://github.com/baichenxw/media-hunter-mcp.git
@@ -29,6 +29,34 @@ uv run media-hunter check
 `check` 会检查全部四个站点，未配置凭证的站点可能失败并导致退出码为 1；请查看 JSON 中各站的 `ok` 和错误信息。某站检查失败不妨碍调用其他已配置站点。
 
 `animation` 提供 ugoira 转 GIF/MP4 所需的 FFmpeg。查找顺序为 `[sites.pixiv].ffmpeg_path` → 系统 PATH 中的 `ffmpeg` → `imageio-ffmpeg` 提供的程序。已有系统 FFmpeg 时可仅运行 `uv sync --locked`；只保存原始动图包则设置 `ugoira_format = "zip"`。下载命令中显式添加 `--extra animation` 可确保可选依赖已安装，详见 [uv 可选依赖说明](https://docs.astral.sh/uv/concepts/projects/sync/#syncing-optional-dependencies)。
+
+### 使用 pip 安装
+
+也可以使用 Python 3.11+ 自带的 pip，无需 uv。在克隆或解压后的项目目录中运行，以下为 Windows PowerShell 示例：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install ".[animation]"
+```
+
+按上文复制并编辑 `config.toml` 后，使用同一虚拟环境检查和启动：
+
+```powershell
+.\.venv\Scripts\media-hunter.exe --config "config.toml" check
+.\.venv\Scripts\media-mcp.exe
+```
+
+Linux/macOS 将上述 `.\.venv\Scripts\` 替换为 `./.venv/bin/`，并去掉程序名的 `.exe`。如果已有系统 FFmpeg，或只保存 ugoira ZIP，可以将安装目标 `".[animation]"` 改为 `.`。
+
+也可直接从 GitHub 的版本标签安装（需要 Git；此命令替代上面的本地安装命令）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.0"
+```
+
+直接安装不会在当前目录生成配置模板，请从 [v1.3.0 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.0/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
+
+接入 MCP 客户端时，将下方配置中的 `command` 改为仅含虚拟环境内 `media-mcp.exe` 绝对路径的数组，例如 `["C:/Projects/media-hunter-mcp/.venv/Scripts/media-mcp.exe"]`，并保留指向实际配置文件的 `MEDIA_HUNTER_CONFIG`。独立命令行示例则用该环境中的 `media-hunter` 替代 `uv run media-hunter`；安装时选择过 `[animation]` 后，无需再传 `--extra animation`。
 
 ## 配置
 
