@@ -173,6 +173,7 @@ class PixivAdapter(SiteAdapter):
             page_count=count,
             preview_url=(illust.get("image_urls") or {}).get("medium"),
             extra={"x_restrict": restrict, "user_id": user.get("id", 0), "illust_type": kind},
+            _download_data=illust,
         )
 
     def _rewrite_image_url(self, url):
@@ -201,7 +202,7 @@ class PixivAdapter(SiteAdapter):
                     },
                 )
             ]
-        illust = await self._detail(post.id)
+        illust = post._download_data or await self._detail(post.id)
         pages = illust.get("meta_pages") or []
         urls = (
             [p["image_urls"]["original"] for p in pages]

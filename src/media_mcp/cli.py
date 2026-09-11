@@ -6,8 +6,10 @@ import argparse
 import asyncio
 import json
 import sys
+import tomllib
 
 from .config import load_config
+from .models import MediaMcpError
 from .service import MediaService
 
 
@@ -27,6 +29,7 @@ def parser():
             command.add_argument("--page", type=int, default=1)
         else:
             command.add_argument("--subdir")
+            command.add_argument("--overwrite", action="store_true", help="强制重新下载已有文件")
         command.add_argument("--timeout", type=float)
     for name in ("get", "download"):
         command = commands.add_parser(name)
@@ -35,10 +38,12 @@ def parser():
         command.add_argument("--timeout", type=float)
         if name == "download":
             command.add_argument("--subdir")
+            command.add_argument("--overwrite", action="store_true", help="强制重新下载已有文件")
     command = commands.add_parser("download-url")
     command.add_argument("url")
     command.add_argument("--subdir")
     command.add_argument("--timeout", type=float)
+    command.add_argument("--overwrite", action="store_true", help="强制重新下载已有文件")
     return root
 
 
@@ -72,14 +77,26 @@ def main():
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:
+        if isinstance(exc, MediaMcpError):
+            error = {**exc.to_dict(), "type": "config"}
+        elif isinstance(exc, tomllib.TOMLDecodeError):
+            error = {"type": "config", "message": "TOML 配置语法错误", "hint": str(exc)}
+        elif isinstance(exc, FileNotFoundError):
+            error = {
+                "type": "config",
+                "message": "找不到配置文件",
+                "hint": "检查 --config 或 MEDIA_HUNTER_CONFIG 指向的路径",
+            }
+        else:
+            error = {
+                "type": "config",
+                "message": f"启动失败（{type(exc).__name__}），请检查配置文件与依赖",
+            }
         print(
             json.dumps(
                 {
                     "success": False,
-                    "error": {
-                        "type": "config",
-                        "message": f"启动失败（{type(exc).__name__}），请检查配置文件与依赖",
-                    },
+                    "error": error,
                 },
                 ensure_ascii=False,
             )

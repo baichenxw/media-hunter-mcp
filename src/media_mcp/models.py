@@ -31,9 +31,12 @@ class Post:
     preview_url: str | None = None
     page_count: int = 1
     extra: dict = field(default_factory=dict)
+    # 仅在一次业务操作内复用站点详情，不进入工具输出或 sidecar。
+    _download_data: dict = field(default_factory=dict, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        data.pop("_download_data")
         data["media_type"] = self.media_type.value
         return data
 
@@ -65,6 +68,9 @@ class DownloadedFile:
     path: str
     page: int
     size: int
+    sha256: str = ""
+    source_key: str = ""
+    reused: bool = False
 
 
 @dataclass
@@ -83,6 +89,8 @@ class DownloadResult:
             "sidecar_path": self.sidecar_path,
             "errors": self.errors,
             "complete": not self.errors,
+            "reused_files": sum(f.reused for f in self.files),
+            "new_files": sum(not f.reused for f in self.files),
         }
 
 

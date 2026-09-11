@@ -90,3 +90,24 @@ def test_invalid_site_options(settings):
 
     with pytest.raises(ValidationError):
         Config(sites={"pixiv": settings})
+
+
+@pytest.mark.parametrize(
+    "contents, field",
+    [
+        ("[network]\nretries = 2.5", "network.retries"),
+        ("[network]\nretries = true", "network.retries"),
+        ('[network]\ntimeout = "SECRET"', "network.timeout"),
+        ("[sites.pixiv]\ndownload_concurrency = 1.5", "sites.pixiv.download_concurrency"),
+        ('[sites.ehentai]\nuse_exhentai = "false"', "sites.ehentai.use_exhentai"),
+        ("network = []", "network"),
+    ],
+)
+def test_config_errors_identify_field_without_echoing_value(tmp_path, contents, field):
+    from media_mcp.models import ValidationError
+
+    path = tmp_path / "bad.toml"
+    path.write_text(contents, encoding="utf-8")
+    with pytest.raises(ValidationError) as error:
+        load_config(path)
+    assert field in str(error.value) and "SECRET" not in str(error.value)

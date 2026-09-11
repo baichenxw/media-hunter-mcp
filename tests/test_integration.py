@@ -83,7 +83,7 @@ async def test_pixiv_single_page_oauth_and_file_download(service):
         respx.post("https://oauth.secure.pixiv.net/auth/token").respond(
             200, json={"access_token": "access", "expires_in": 3600}
         )
-        respx.get("https://app-api.pixiv.net/v1/illust/detail").respond(
+        detail = respx.get("https://app-api.pixiv.net/v1/illust/detail").respond(
             200,
             json={
                 "illust": {
@@ -97,6 +97,7 @@ async def test_pixiv_single_page_oauth_and_file_download(service):
         )
         result = await service.execute("download_url", url="https://www.pixiv.net/artworks/12")
         assert result["success"] and len(result["data"]["files"]) == 1
+        assert detail.call_count == 1
         assert media.calls.last.request.headers["Referer"] == "https://pixiv.net"
         assert "Authorization" not in media.calls.last.request.headers
 

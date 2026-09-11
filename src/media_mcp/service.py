@@ -11,6 +11,7 @@ from .config import Config, load_config
 from .downloader import Downloader
 from .models import MediaMcpError, ToolTimeoutError, ValidationError
 from .network import Network
+from .progress import ProgressCallback, progress_scope, report_progress
 from .sites.e621 import E621Adapter
 from .sites.ehentai import EHentaiAdapter
 from .sites.pixiv import PixivAdapter
@@ -53,7 +54,7 @@ class MediaService:
                 PixivAdapter(self.config, self.network),
             )
         }
-        self._download_lock = asyncio.Lock()
+        self._download_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self):
         await self.network.close()
@@ -92,7 +93,13 @@ class MediaService:
             "hint": "检查站点响应或运行测试排查",
         }
 
-    async def execute(self, operation, **kwargs):
+    async def execute(self, operation, *, progress: ProgressCallback | None = None, **kwargs):
+        with progress_scope(progress):
+            result = await self._execute(operation, **kwargs)
+            await report_progress("操作完成" if result["success"] else "操作结束，存在未完成项")
+            return result
+
+    async def _execute(self, operation, **kwargs):
         try:
             timeout = kwargs.pop("timeout", None)
             if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
@@ -172,40 +179,64 @@ class MediaService:
         self._validate_id(adapter.name, post_id)
         return (await adapter.get_post(post_id)).to_dict()
 
-    async def _download(self, adapter, post, subdir, targets=None):
+    async def _download(self, adapter, post, subdir, targets=None, *, overwrite=False):
+        await report_progress(f"{adapter.name}：解析作品 {post.id} 的下载目标")
         if targets is None:
             targets = await adapter.get_download_targets(post)
-        return (await self.downloader.download(post, targets, subdir)).to_dict()
+        return (
+            await self.downloader.download(post, targets, subdir, overwrite=overwrite)
+        ).to_dict()
 
-    async def download_post(self, site, post_id, subdir=None):
+    def _download_lock(self, site):
+        # 不同站点的目录互不重叠；同站点排队，避免同时覆盖同一作品和清单。
+        return self._download_locks.setdefault(site, asyncio.Lock())
+
+    async def download_post(self, site, post_id, subdir=None, overwrite=False):
         adapter = self.adapter(site)
         self._validate_id(adapter.name, post_id)
-        # 串行化同一进程的下载操作，文件内并发仍由 Downloader 控制。
-        async with self._download_lock:
+        await report_progress(f"{adapter.name}：等待下载队列")
+        async with self._download_lock(adapter.name):
+            await report_progress(f"{adapter.name}：获取作品 {post_id} 的详情")
             post = await adapter.get_post(post_id)
-            return await self._download(adapter, post, subdir)
+            return await self._download(adapter, post, subdir, overwrite=overwrite)
 
-    async def download_url(self, url, subdir=None):
+    async def download_url(self, url, subdir=None, overwrite=False):
         for adapter in self.adapters.values():
             if post_id := adapter.parse_url(url.strip()):
-                return await self.download_post(adapter.name, post_id, subdir)
+                return await self.download_post(adapter.name, post_id, subdir, overwrite)
         raise ValidationError("无法识别的 URL", "请提供四个受支持站点的作品或画廊页面链接")
 
     async def download_search(
-        self, site, query, limit=10, min_score=None, rating=None, subdir=None, timeout=None
+        self,
+        site,
+        query,
+        limit=10,
+        min_score=None,
+        rating=None,
+        subdir=None,
+        timeout=None,
+        overwrite=False,
     ):
         adapter = self.adapter(site)
         options = self._search_options(adapter.name, limit, 1, min_score, rating)
         if limit > MAX_BATCH_FILES:
             raise ValidationError("批量下载 limit 最大为 50")
         results, errors, skipped = [], [], []
-        attempted = total = 0
+        attempted = total = reused = 0
         current_id = None
+        stop_reason = None
         try:
             async with asyncio.timeout(timeout):
-                async with self._download_lock:
+                await report_progress(f"{adapter.name}：等待下载队列")
+                async with self._download_lock(adapter.name):
+                    await report_progress(f"{adapter.name}：搜索待下载作品")
                     posts = await adapter.search(query, **options)
                     for post in posts:
+                        if stop_reason:
+                            skipped.append(
+                                {"id": post.id, "reason": "站点拒绝访问，已停止本批后续请求"}
+                            )
+                            continue
                         current_id = post.id
                         remaining = MAX_BATCH_FILES - attempted
                         if post.page_count > remaining or remaining == 0:
@@ -227,14 +258,28 @@ class MediaService:
                                 )
                                 continue
                             attempted += len(targets)
-                            data = await self._download(adapter, post, subdir, targets)
+                            data = await self._download(
+                                adapter, post, subdir, targets, overwrite=overwrite
+                            )
                             total += len(data["files"])
+                            reused += data.get("reused_files", 0)
                             results.append({"id": post.id, **data})
                             errors.extend(
                                 {"id": post.id, **error} for error in data.get("errors", [])
                             )
+                            stop_reason = next(
+                                (
+                                    error
+                                    for error in data.get("errors", [])
+                                    if error.get("type") in {"auth", "quota"}
+                                ),
+                                None,
+                            )
                         except Exception as exc:
-                            errors.append({"id": post.id, **self._error(exc)})
+                            error = self._error(exc)
+                            errors.append({"id": post.id, **error})
+                            if error["type"] in {"auth", "quota"}:
+                                stop_reason = error
         except TimeoutError:
             errors.append(
                 {
@@ -249,6 +294,9 @@ class MediaService:
             "skipped": skipped,
             "total_files": total,
             "attempted_files": attempted,
+            "reused_files": reused,
+            "new_files": total - reused,
+            "stop_reason": stop_reason,
             "complete": not errors and not skipped,
         }
 

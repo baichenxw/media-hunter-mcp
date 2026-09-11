@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from . import __version__
 from .config import Config
 from .models import AuthError, NotFoundError, QuotaError, SiteNetworkError
 
@@ -87,7 +88,7 @@ class Network:
                 timeout=self._config.network.timeout,
                 follow_redirects=True,
                 trust_env=False,
-                headers={"User-Agent": "media-hunter-mcp/0.2 (personal media client)"},
+                headers={"User-Agent": f"media-hunter-mcp/{__version__} (personal media client)"},
             )
         return self._clients[key]
 
@@ -127,17 +128,22 @@ class Network:
                     pass
         return min(2**attempt, 8)
 
+    async def _send(self, client, site, method, url, *, stream=False, **kwargs):
+        """一次受限速控制的网络尝试；流式传输的重试由下载器统一计数。"""
+        await self._limiter(site).acquire()
+        auth = kwargs.pop("auth", None)
+        request = client.build_request(method, url, **kwargs)
+        return await client.send(request, auth=auth, stream=stream)
+
     async def _open(self, site, method, url, *, stream=False, allow_mirror=True, **kwargs):
         last_status = None
         for client, candidate in self._attempts(site, url, allow_mirror):
             for attempt in range(self._config.network.retries):
-                await self._limiter(site).acquire()
                 response = None
                 try:
-                    request_kwargs = dict(kwargs)
-                    auth = request_kwargs.pop("auth", None)
-                    request = client.build_request(method, candidate, **request_kwargs)
-                    response = await client.send(request, auth=auth, stream=stream)
+                    response = await self._send(
+                        client, site, method, candidate, stream=stream, **kwargs
+                    )
                     last_status = response.status_code
                     if last_status not in RETRYABLE_STATUS:
                         return response
@@ -158,8 +164,20 @@ class Network:
         return await self._open(site, method, url, **kwargs)
 
     @asynccontextmanager
-    async def stream(self, site, method, url, **kwargs):
-        response = await self._open(site, method, url, stream=True, **kwargs)
+    async def stream(self, site, method, url, *, retry=True, allow_mirror=True, **kwargs):
+        if retry:
+            response = await self._open(
+                site, method, url, stream=True, allow_mirror=allow_mirror, **kwargs
+            )
+        else:
+            response = await self._send(
+                self._client(bool(self._config.network.proxy)),
+                site,
+                method,
+                url,
+                stream=True,
+                **kwargs,
+            )
         try:
             yield response
         finally:

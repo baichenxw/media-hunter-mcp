@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from .. import __version__
 from ..models import (
     AuthError,
     DownloadTarget,
@@ -16,7 +17,7 @@ from ..network import response_json
 from .base import SiteAdapter
 
 VIDEO_EXTS = {"webm", "mp4"}
-DEFAULT_UA = "media-hunter-mcp/0.1 (by local user)"
+DEFAULT_UA = f"media-hunter-mcp/{__version__} (by local user)"
 
 
 class E621Adapter(SiteAdapter):

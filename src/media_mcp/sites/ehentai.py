@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
+from .. import __version__
 from ..models import (
     AuthError,
     DownloadTarget,
@@ -63,7 +64,7 @@ class EHentaiAdapter(SiteAdapter):
         return "https://api.e-hentai.org/api.php"
 
     def _headers(self) -> dict[str, str]:
-        headers = {"User-Agent": "media-hunter-mcp/0.1 (gallery metadata client)"}
+        headers = {"User-Agent": f"media-hunter-mcp/{__version__} (gallery metadata client)"}
         cookie = self._cookie()
         if cookie:
             headers["Cookie"] = cookie
@@ -226,6 +227,8 @@ class EHentaiAdapter(SiteAdapter):
     async def _collect_page_urls(self, gid: str, token: str, page_count: int) -> list[str]:
         # 用户可配置 20/40/80 等不同缩略图数，必须从实际分页链接遍历。
         found: dict[int, str] = {}
+        base = self._base()
+        prefix = urlsplit(base).path.rstrip("/")
         pending, visited = [0], set()
         while pending:
             p = pending.pop(0)
@@ -236,10 +239,14 @@ class EHentaiAdapter(SiteAdapter):
             soup = BeautifulSoup(html, "html.parser")
             for anchor in soup.find_all("a", href=True):
                 parts = urlsplit(urljoin(f"{self._base()}/g/{gid}/{token}/", anchor["href"]))
-                match = re.fullmatch(r"/s/([0-9a-f]+)/" + re.escape(gid) + r"-(\d+)", parts.path)
+                # 镜像既可能保留原站链接，也可能将链接改写到自己的路径前缀下。
+                path = parts.path
+                if prefix and path.startswith(prefix + "/"):
+                    path = path[len(prefix) :]
+                match = re.fullmatch(r"/s/([0-9a-f]+)/" + re.escape(gid) + r"-(\d+)", path)
                 if match:
-                    found[int(match[2])] = self._base() + parts.path
-                elif parts.path.rstrip("/") == f"/g/{gid}/{token}":
+                    found[int(match[2])] = base + path
+                elif path.rstrip("/") == f"/g/{gid}/{token}":
                     value = parse_qs(parts.query).get("p", [""])[0]
                     if value.isdigit() and int(value) not in visited and int(value) not in pending:
                         pending.append(int(value))

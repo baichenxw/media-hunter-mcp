@@ -1,12 +1,12 @@
 [project]
 name = "media-hunter-mcp"
-version = "0.2.0"
+version = "1.3.0"
 license = "MIT"
 license-files = ["LICENSE"]
 description = "搜索并下载 e621 / rule34 / E-Hentai / pixiv 资源的 MCP 服务器"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=3.4.5,<4",
+    "fastmcp>=4.0.3,<5",
     "httpx[socks]>=0.28.1,<1",
     "beautifulsoup4>=4.12,<5",
 ]

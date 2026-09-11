@@ -51,7 +51,6 @@ def test_to_post():
 
 async def test_multi_page_targets(adapter):
     site, router = adapter
-    router.get(API + "/v1/illust/detail").respond(200, json={"illust": ILLUST})
     targets = await site.get_download_targets(PixivAdapter._to_post(ILLUST))
     assert [t.filename for t in targets] == ["777_p0.png", "777_p1.png"]
     assert all(t.headers["Referer"] == "https://pixiv.net" for t in targets)

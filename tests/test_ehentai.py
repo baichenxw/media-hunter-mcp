@@ -227,3 +227,30 @@ async def test_incomplete_gallery_not_reported_complete():
         with pytest.raises(SiteNetworkError, match="不完整"):
             await adapter._collect_page_urls("123", "abc", 3)
     await network.close()
+
+
+@pytest.mark.parametrize("image_prefix", ["/", "/eh/", "https://mirror.example/eh/"])
+async def test_gallery_mirror_prefix_handles_relative_pagination(image_prefix):
+    config = Config(
+        network=NetworkConfig(retries=1),
+        sites={"ehentai": {"request_interval": 0, "mirror_base": "https://mirror.example/eh"}},
+    )
+    network = Network(config)
+    try:
+        with respx.mock:
+            route = respx.get("https://mirror.example/eh/g/123/abc/").mock(
+                side_effect=[
+                    httpx.Response(
+                        200, text=f'<a href="{image_prefix}s/aa/123-1">1</a><a href="?p=1">Next</a>'
+                    ),
+                    httpx.Response(200, text=f'<a href="{image_prefix}s/bb/123-2">2</a>'),
+                ]
+            )
+            urls = await EHentaiAdapter(config, network)._collect_page_urls("123", "abc", 2)
+            assert route.call_count == 2 and route.calls[1].request.url.params["p"] == "1"
+            assert urls == [
+                "https://mirror.example/eh/s/aa/123-1",
+                "https://mirror.example/eh/s/bb/123-2",
+            ]
+    finally:
+        await network.close()
