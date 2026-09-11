@@ -4,16 +4,31 @@
 
 ## 快速开始
 
-在项目目录运行（Python 3.11+、uv）：
+需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次获取项目：
 
 ```powershell
-uv sync --extra animation
+git clone https://github.com/baichenxw/media-hunter-mcp.git
+cd media-hunter-mcp
+uv sync --locked --extra animation
+```
+
+已有项目时直接进入项目目录。首次配置时执行下面的命令，仅在文件不存在时复制，避免覆盖已有凭证：
+
+```powershell
+if (-not (Test-Path -LiteralPath config.toml)) {
+  Copy-Item -LiteralPath config.example.toml -Destination config.toml
+}
+```
+
+编辑本地 `config.toml`，填写需要使用的站点凭证，并修改 `[network].proxy`：示例值 `http://127.0.0.1:7897` 只适用于本机该端口确有代理的情况；不使用代理时填写 `proxy = ""`。完成后检查：
+
+```powershell
 uv run media-hunter check
 ```
 
-`animation` 安装项目内使用的 ffmpeg，可将 ugoira 转成 GIF/MP4。已有系统 ffmpeg 时可仅运行 `uv sync`，或设置 `ugoira_format = "zip"` 保存原始动图包。
+`check` 会检查全部四个站点，未配置凭证的站点可能失败并导致退出码为 1；请查看 JSON 中各站的 `ok` 和错误信息。某站检查失败不妨碍调用其他已配置站点。
 
-首次安装时复制 `config.example.toml` 为 `config.toml`，填写站点凭证。已有 `config.toml` 可继续使用。
+`animation` 提供 ugoira 转 GIF/MP4 所需的 FFmpeg。查找顺序为 `[sites.pixiv].ffmpeg_path` → 系统 PATH 中的 `ffmpeg` → `imageio-ffmpeg` 提供的程序。已有系统 FFmpeg 时可仅运行 `uv sync --locked`；只保存原始动图包则设置 `ugoira_format = "zip"`。下载命令中显式添加 `--extra animation` 可确保可选依赖已安装，详见 [uv 可选依赖说明](https://docs.astral.sh/uv/concepts/projects/sync/#syncing-optional-dependencies)。
 
 ## 配置
 
@@ -40,19 +55,23 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 
 ## MCP 接入
 
-以 OpenCode 为例，在其配置的 `mcp` 段添加：
+以 [OpenCode](https://opencode.ai/docs/mcp-servers/) 为例，下面是完整 JSON 示例；已有配置时将 `media-hunter` 条目合并到原来的 `mcp` 对象中。两处 `C:/Projects/media-hunter-mcp` 都需要替换为自己的项目绝对路径：
 
 ```json
-"media-hunter": {
-  "type": "local",
-  "command": [
-    "uv", "run", "--project",
-    "C:/Projects/media-hunter-mcp",
-    "--extra", "animation", "media-mcp"
-  ],
-  "enabled": true,
-  "environment": {
-    "MEDIA_HUNTER_CONFIG": "C:/Projects/media-hunter-mcp/config.toml"
+{
+  "mcp": {
+    "media-hunter": {
+      "type": "local",
+      "command": [
+        "uv", "run", "--project",
+        "C:/Projects/media-hunter-mcp",
+        "--locked", "--extra", "animation", "media-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "MEDIA_HUNTER_CONFIG": "C:/Projects/media-hunter-mcp/config.toml"
+      }
+    }
   }
 }
 ```
@@ -75,6 +94,8 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 | `download_search` | 搜索并下载，整批最多尝试 50 个文件；超额画廊整本跳过 |
 | `download_url` | 严格识别四站作品页面 URL 后下载，不接受任意文件直链 |
 | `self_check` | 并行检查凭证与 API/首页连通性，每站最多 45 秒；不保证所有媒体链接可下载 |
+
+`site` 使用 `e621`、`rule34`、`ehentai` 或 `pixiv`；ExHentai 同样使用 `ehentai`，通过配置切换。
 
 搜索 `page` 从 1 开始。`limit` 上限：e621 320、rule34 1000、E-Hentai 100、Pixiv 30；批量下载的 `limit` 还限制为最多 50 个作品。E-Hentai 使用实际的 Next 游标顺序翻页，最多 100 页；深页查询比第一页慢。返回的是站点当前页中符合条件的结果，过滤后可能少于 limit。
 
@@ -104,13 +125,15 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 uv run media-hunter check
 uv run media-hunter search e621 "landscape" --rating safe --limit 5
 uv run media-hunter search pixiv "風景" --rating safe --limit 5
-uv run media-hunter get pixiv <作品ID>
+uv run media-hunter get pixiv "作品ID"
 uv run --extra animation media-hunter download-url "作品页面URL" --timeout 300
 uv run media-hunter download-search e621 "landscape" --rating safe --limit 3 --timeout 180
-uv run media-hunter download pixiv <作品ID> --overwrite
+uv run --extra animation media-hunter download pixiv "作品ID" --overwrite
 ```
 
-指定配置：`uv run media-hunter --config "配置文件路径" check`。命令行输出 JSON；操作失败或部分完成退出码为 1，启动/配置失败为 2。配置校验错误会指出字段，例如 `network.timeout`，不回显该字段中的凭证或其他值。
+将示例中的 `作品ID` 替换为实际数字 ID，将 `作品页面URL` 替换为完整页面链接；E-Hentai 的 ID 使用 `"gid/token"` 格式。
+
+指定配置：`uv run media-hunter --config "配置文件路径" check`。业务结果输出 JSON；操作失败、部分完成或任一站点检查失败时退出码为 1，启动/配置失败为 2。`--help` 和命令行参数解析错误输出普通文本；Ctrl+C 中断的退出码为 130。配置校验错误会指出字段，例如 `network.timeout`，不回显该字段中的凭证或其他值。
 
 ## 验证与维护
 
