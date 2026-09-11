@@ -41,6 +41,7 @@ IMAGE_PAGE_HTML = (
 
 
 def _adapter(**sites):
+    sites["ehentai"] = {"use_exhentai": False, **sites.get("ehentai", {})}
     config = Config(network=NetworkConfig(retries=1), sites=sites)
     network = Network(config)
     return EHentaiAdapter(config, network), network
@@ -168,7 +169,10 @@ def test_parse_url():
 
 
 async def test_search_cursor_pagination_and_category():
-    config = Config(network=NetworkConfig(retries=1), sites={"ehentai": {"request_interval": 0}})
+    config = Config(
+        network=NetworkConfig(retries=1),
+        sites={"ehentai": {"use_exhentai": False, "request_interval": 0}},
+    )
     network = Network(config)
     adapter = EHentaiAdapter(config, network)
     with respx.mock:
@@ -192,7 +196,10 @@ async def test_search_cursor_pagination_and_category():
 
 
 async def test_gallery_follows_actual_thumbnail_pages():
-    config = Config(network=NetworkConfig(retries=1), sites={"ehentai": {"request_interval": 0}})
+    config = Config(
+        network=NetworkConfig(retries=1),
+        sites={"ehentai": {"use_exhentai": False, "request_interval": 0}},
+    )
     network = Network(config)
     adapter = EHentaiAdapter(config, network)
     with respx.mock:
@@ -217,7 +224,10 @@ async def test_gallery_follows_actual_thumbnail_pages():
 async def test_incomplete_gallery_not_reported_complete():
     from media_mcp.models import SiteNetworkError
 
-    config = Config(network=NetworkConfig(retries=1), sites={"ehentai": {"request_interval": 0}})
+    config = Config(
+        network=NetworkConfig(retries=1),
+        sites={"ehentai": {"use_exhentai": False, "request_interval": 0}},
+    )
     network = Network(config)
     adapter = EHentaiAdapter(config, network)
     with respx.mock:
@@ -233,7 +243,13 @@ async def test_incomplete_gallery_not_reported_complete():
 async def test_gallery_mirror_prefix_handles_relative_pagination(image_prefix):
     config = Config(
         network=NetworkConfig(retries=1),
-        sites={"ehentai": {"request_interval": 0, "mirror_base": "https://mirror.example/eh"}},
+        sites={
+            "ehentai": {
+                "use_exhentai": False,
+                "request_interval": 0,
+                "mirror_base": "https://mirror.example/eh",
+            }
+        },
     )
     network = Network(config)
     try:

@@ -10,7 +10,7 @@ retries = 3                   # 最大尝试次数（包含首次），1–10
 [sites.e621]
 username = ""
 api_key = ""
-# user_agent = "media-hunter-mcp/1.3.0 (by your-e621-username)"
+# user_agent = "media-hunter-mcp/1.3.1 (by your-e621-username)"
 # mirror_base = "https://your-trusted-proxy.example/e621"
 # request_interval = 0.5
 # download_concurrency = 4
@@ -23,12 +23,14 @@ api_key = ""
 
 [sites.ehentai]
 cookie = "" # ipb_member_id=...; ipb_pass_hash=...; igneous=...
-use_exhentai = false # true 时必须有可访问 ExHentai 的 Cookie
-# mirror_base = "https://your-trusted-proxy.example"
+use_exhentai = true # 默认里站；工具参数可临时选表站/里站，里站需要有效 Cookie
+allow_original = true # 允许工具 original=true 下载原图，可能消耗原图额度或 GP
+# mirror_base = "https://your-trusted-public-proxy.example" # 仅表站
+# exhentai_mirror_base = "https://your-trusted-private-proxy.example" # 仅里站
 # request_interval = 3.0
 # download_delay = 3.0 # 各文件开始处理的间隔秒数
 # download_concurrency = 2
-# 下载的是图片页实际提供的图像，不主动消耗原图下载额度。
+# 默认下载页面图；original=true 使用原图入口，失败时不自动退回缩放图。
 
 [sites.pixiv]
 refresh_token = ""

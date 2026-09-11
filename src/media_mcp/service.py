@@ -129,11 +129,21 @@ class MediaService:
         except Exception as exc:
             return {"success": False, "error": self._error(exc)}
 
-    def adapter(self, site):
+    def adapter(self, site, *, use_exhentai=None, original=False):
         name = site.strip().lower()
         if name not in self.adapters:
             raise ValidationError(f"未知站点: {name}", "可用: " + ", ".join(self.adapters))
-        return self.adapters[name]
+        if use_exhentai is not None and not isinstance(use_exhentai, bool):
+            raise ValidationError("use_exhentai 必须是布尔值")
+        if not isinstance(original, bool):
+            raise ValidationError("original 必须是布尔值")
+        adapter = self.adapters[name]
+        if name != "ehentai":
+            if use_exhentai is not None or original:
+                raise ValidationError("use_exhentai 和 original 仅适用于 ehentai")
+        elif use_exhentai is not None or original:
+            adapter = adapter.with_options(use_exhentai=use_exhentai, original=original)
+        return adapter
 
     def _search_options(self, site, limit, page, min_score, rating):
         max_limit = SITE_LIMITS.get(site, 100)
@@ -163,8 +173,10 @@ class MediaService:
                 "post_id 应为 gid/token" if site == "ehentai" else "post_id 必须是数字 ID"
             )
 
-    async def search(self, site, query, limit=20, page=1, min_score=None, rating=None):
-        adapter = self.adapter(site)
+    async def search(
+        self, site, query, limit=20, page=1, min_score=None, rating=None, use_exhentai=None
+    ):
+        adapter = self.adapter(site, use_exhentai=use_exhentai)
         options = self._search_options(adapter.name, limit, page, min_score, rating)
         posts = await adapter.search(query, **options)
         return {
@@ -174,8 +186,8 @@ class MediaService:
             "posts": [p.to_dict() for p in posts],
         }
 
-    async def get_post(self, site, post_id):
-        adapter = self.adapter(site)
+    async def get_post(self, site, post_id, use_exhentai=None):
+        adapter = self.adapter(site, use_exhentai=use_exhentai)
         self._validate_id(adapter.name, post_id)
         return (await adapter.get_post(post_id)).to_dict()
 
@@ -191,8 +203,10 @@ class MediaService:
         # 不同站点的目录互不重叠；同站点排队，避免同时覆盖同一作品和清单。
         return self._download_locks.setdefault(site, asyncio.Lock())
 
-    async def download_post(self, site, post_id, subdir=None, overwrite=False):
-        adapter = self.adapter(site)
+    async def download_post(
+        self, site, post_id, subdir=None, overwrite=False, use_exhentai=None, original=False
+    ):
+        adapter = self.adapter(site, use_exhentai=use_exhentai, original=original)
         self._validate_id(adapter.name, post_id)
         await report_progress(f"{adapter.name}：等待下载队列")
         async with self._download_lock(adapter.name):
@@ -200,10 +214,21 @@ class MediaService:
             post = await adapter.get_post(post_id)
             return await self._download(adapter, post, subdir, overwrite=overwrite)
 
-    async def download_url(self, url, subdir=None, overwrite=False):
+    async def download_url(
+        self, url, subdir=None, overwrite=False, use_exhentai=None, original=False
+    ):
         for adapter in self.adapters.values():
             if post_id := adapter.parse_url(url.strip()):
-                return await self.download_post(adapter.name, post_id, subdir, overwrite)
+                if adapter.name == "ehentai" and use_exhentai is None:
+                    use_exhentai = urlsplit(url.strip()).hostname == "exhentai.org"
+                return await self.download_post(
+                    adapter.name,
+                    post_id,
+                    subdir,
+                    overwrite,
+                    use_exhentai=use_exhentai,
+                    original=original,
+                )
         raise ValidationError("无法识别的 URL", "请提供四个受支持站点的作品或画廊页面链接")
 
     async def download_search(
@@ -216,8 +241,10 @@ class MediaService:
         subdir=None,
         timeout=None,
         overwrite=False,
+        use_exhentai=None,
+        original=False,
     ):
-        adapter = self.adapter(site)
+        adapter = self.adapter(site, use_exhentai=use_exhentai, original=original)
         options = self._search_options(adapter.name, limit, 1, min_score, rating)
         if limit > MAX_BATCH_FILES:
             raise ValidationError("批量下载 limit 最大为 50")
@@ -300,7 +327,11 @@ class MediaService:
             "complete": not errors and not skipped,
         }
 
-    async def self_check(self):
+    async def self_check(self, use_exhentai=None):
+        adapters = dict(self.adapters)
+        if "ehentai" in adapters:
+            adapters["ehentai"] = self.adapter("ehentai", use_exhentai=use_exhentai)
+
         async def check(name, adapter):
             try:
                 async with asyncio.timeout(45):
@@ -310,7 +341,7 @@ class MediaService:
             except Exception as exc:
                 return name, {"ok": False, "detail": self._error(exc)["message"]}
 
-        report = dict(await asyncio.gather(*(check(name, a) for name, a in self.adapters.items())))
+        report = dict(await asyncio.gather(*(check(name, a) for name, a in adapters.items())))
         report["download_root"] = str(self.config.download_root)
         proxy = urlsplit(self.config.network.proxy)
         report["proxy"] = (

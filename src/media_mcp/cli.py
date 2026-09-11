@@ -44,6 +44,17 @@ def parser():
     command.add_argument("--subdir")
     command.add_argument("--timeout", type=float)
     command.add_argument("--overwrite", action="store_true", help="强制重新下载已有文件")
+    for name, command in commands.choices.items():
+        command.add_argument(
+            "--use-exhentai",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="E 站选里站；--no-use-exhentai 选表站，省略沿用配置（按 URL 下载时按域名）",
+        )
+        if name in {"download", "download-url", "download-search"}:
+            command.add_argument(
+                "--original", action="store_true", help="E 站下载原图，可能消耗 FIQ/GP"
+            )
     return root
 
 

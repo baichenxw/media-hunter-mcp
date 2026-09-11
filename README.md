@@ -2,6 +2,14 @@
 
 搜索并下载 **e621、rule34.xxx、E-Hentai / ExHentai、Pixiv** 的作品。支持图片、视频、多图画廊及 Pixiv ugoira；提供 MCP 工具和独立命令行。
 
+## 1.3.1 更新
+
+- E 站支持每次调用选择表站/里站；默认使用里站，按链接下载时默认遵循链接域名。
+- 下载工具新增 `original=true` 原图选项，配置默认允许使用；页面图与原图分别保存和校验复用。
+- 表站和里站代理分别使用 `mirror_base`、`exhentai_mirror_base`；原图入口的登录或额度错误会停止后续下载。
+
+从 1.3.0 升级后，保留自己的 `config.toml`，按下文检查 E 站开关与代理项，并重启 MCP 服务以刷新工具参数。已有配置中显式指定的表站选择仍然有效。
+
 ## 快速开始
 
 以下使用 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次获取项目：
@@ -48,13 +56,13 @@ python -m venv .venv
 
 Linux/macOS 将上述 `.\.venv\Scripts\` 替换为 `./.venv/bin/`，并去掉程序名的 `.exe`。如果已有系统 FFmpeg，或只保存 ugoira ZIP，可以将安装目标 `".[animation]"` 改为 `.`。
 
-也可直接从 GitHub 的版本标签安装（需要 Git；此命令替代上面的本地安装命令）：
+也可直接从 GitHub 的版本标签安装或升级（需要 Git；此命令替代上面的本地安装命令）：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.0"
+.\.venv\Scripts\python.exe -m pip install --upgrade "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.1"
 ```
 
-直接安装不会在当前目录生成配置模板，请从 [v1.3.0 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.0/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
+直接安装不会在当前目录生成配置模板，请从 [v1.3.1 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.1/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
 
 接入 MCP 客户端时，将下方配置中的 `command` 改为仅含虚拟环境内 `media-mcp.exe` 绝对路径的数组，例如 `["C:/Projects/media-hunter-mcp/.venv/Scripts/media-mcp.exe"]`，并保留指向实际配置文件的 `MEDIA_HUNTER_CONFIG`。独立命令行示例则用该环境中的 `media-hunter` 替代 `uv run media-hunter`；安装时选择过 `[animation]` 后，无需再传 `--extra animation`。
 
@@ -70,14 +78,16 @@ Linux/macOS 将上述 `.\.venv\Scripts\` 替换为 `./.venv/bin/`，并去掉程
 | `[network].retries` | 每个候选地址的最大尝试次数，1–10，包含首次请求 |
 | `[sites.e621]` | 可选 `username`、`api_key`；可自定义描述性 `user_agent` |
 | `[sites.rule34]` | 必填 `user_id`、`api_key`，在站点账户 Options 页面生成 |
-| `[sites.ehentai]` | `cookie`；`use_exhentai = true` 时必须提供 Cookie |
+| `[sites.ehentai]` | `cookie`；`use_exhentai = true`（默认）选里站，需要有效 Cookie；`allow_original = true`（默认）允许工具请求原图 |
 | `[sites.pixiv]` | 必填 `refresh_token`；支持 `api_base`、`oauth_base`、`image_mirror` |
 
 每站可设置 `request_interval`、`download_delay`、`download_concurrency`（1–16）。每次网络尝试都限速；`download_delay` 控制待下载文件开始处理的间隔，`download_concurrency` 控制同一作品内部的并发数。同一服务进程内，同站点的下载调用会排队，不同站点可以同时下载；排队时间计入总超时。并发数和重试次数必须填写整数，布尔开关使用 TOML 的 `true` / `false`。
 
 媒体文件的连接失败、HTTP 可重试错误及传输中断共用 `[network].retries` 次尝试，不会因两层重试而相乘。API 请求仍按每个候选地址分别计数。
 
-`mirror_base` 是用户自行配置的可信反向代理。e621/rule34 的 API 在连接失败、429 或可重试 5xx 后尝试镜像；E-Hentai 的镜像作为主地址，支持 `https://example.com/eh` 这样的路径前缀。Pixiv 可分别设置 API/OAuth 主地址和图片镜像。API 镜像不会自动套用到图片 CDN 或 OAuth 地址。认证请求可能经配置的反向代理发送，请只使用自己信任的地址。
+`mirror_base` 是用户自行配置的可信反向代理。e621/rule34 的 API 在连接失败、429 或可重试 5xx 后尝试镜像；E-Hentai 的 `mirror_base` 仅用于表站，`exhentai_mirror_base` 仅用于里站，分别作为所选站点的主地址，不跨站自动回退，支持 `https://example.com/eh` 这样的路径前缀。Pixiv 可分别设置 API/OAuth 主地址和图片镜像。API 镜像不会自动套用到图片 CDN 或 OAuth 地址。认证请求可能经配置的反向代理发送，请只使用自己信任的地址。
+
+如果旧配置用 `mirror_base` 指向里站代理，请把该项改名为 `exhentai_mirror_base`；表站代理继续使用 `mirror_base`。
 
 Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在当前服务进程内使用；重新启动仍读取配置中的值。配置文件不自动改写。
 
@@ -108,7 +118,7 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 
 也支持 `MEDIA_HUNTER_TRANSPORT=http`（Streamable HTTP，默认 `/mcp` 路径）；默认监听 `127.0.0.1:8787`。可用 `MEDIA_HUNTER_HOST`、`MEDIA_HUNTER_PORT` 覆盖。`sse` 仅保留给旧客户端，新接入使用 stdio 或 Streamable HTTP。HTTP 模式未配置身份验证，应在受信任的本机环境使用。
 
-1.3.0 使用 FastMCP 4 / MCP Python SDK 2，支持 [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) 的 `server/discover`、按请求协商、`resultType` 及列表缓存字段，也兼容旧版 `initialize` 流程。传输和版本转换交给 SDK；业务代码不自行拼接协议消息。工具声明只读/写入行为、参数范围和输出 JSON Schema。工具执行失败使用 `isError=true`，同时保留 JSON 文本与 `structuredContent`，部分完成的文件清单不会丢失。列表缓存提示为 60 秒、private，不缓存下载调用结果。
+1.3.1 使用 FastMCP 4 / MCP Python SDK 2，支持 [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) 的 `server/discover`、按请求协商、`resultType` 及列表缓存字段，也兼容旧版 `initialize` 流程。传输和版本转换交给 SDK；业务代码不自行拼接协议消息。工具声明只读/写入行为、参数范围和输出 JSON Schema。工具执行失败使用 `isError=true`，同时保留 JSON 文本与 `structuredContent`，部分完成的文件清单不会丢失。列表缓存提示为 60 秒、private，不缓存下载调用结果。
 
 下载过程提供排队、详情、解析、文件完成和合成阶段的进度。只有客户端请求进度通知时才发送；消息中的页数表示当前作品进度，协议数值是单调递增的工作事件计数，总量未知时不伪造百分比。是否展示进度取决于客户端。
 
@@ -123,13 +133,35 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 | `download_url` | 严格识别四站作品页面 URL 后下载，不接受任意文件直链 |
 | `self_check` | 并行检查凭证与 API/首页连通性，每站最多 45 秒；不保证所有媒体链接可下载 |
 
-`site` 使用 `e621`、`rule34`、`ehentai` 或 `pixiv`；ExHentai 同样使用 `ehentai`，通过配置切换。
+`site` 使用 `e621`、`rule34`、`ehentai` 或 `pixiv`；ExHentai 同样使用 `ehentai`，可通过每次调用的 `use_exhentai` 参数切换。
 
 搜索 `page` 从 1 开始。`limit` 上限：e621 320、rule34 1000、E-Hentai 100、Pixiv 30；批量下载的 `limit` 还限制为最多 50 个作品。E-Hentai 使用实际的 Next 游标顺序翻页，最多 100 页；深页查询比第一页慢。返回的是站点当前页中符合条件的结果，过滤后可能少于 limit。
 
 `rating` 语义：e621 为 s/q/e 或完整名称；rule34 为 safe/questionable/explicit；Pixiv 为 all（不限）、safe、r18、r18g，后面三种精确匹配；E-Hentai 为画廊分类，例如 Manga、Non-H。`min_score` 对 Pixiv 表示收藏数，对 E-Hentai 表示星级。
 
 下载工具的 `timeout` 是覆盖排队、搜索/详情、图片页解析、传输与合成的总秒数。省略表示不限制总时长；网络操作仍使用 `[network].timeout`。
+
+### E 站：选择表站、里站和原图
+
+搜索、详情、下载和检查工具均支持 `use_exhentai`：`true` 使用里站 ExHentai，`false` 使用表站 E-Hentai；省略时按配置决定，配置缺省及模板默认均为里站。`download_url` 是例外：省略时遵循链接域名，也可以显式覆盖。选择里站需要账号 Cookie，不会在失败时悄悄改用表站。旧配置中明确设置的 `use_exhentai = false` 仍然有效。
+
+三个下载工具还支持 `original`：默认 `false` 下载页面图，设为 `true` 使用页面提供的原图入口。`allow_original = true` 只表示允许这一选择，不会让每次调用自动下载原图；设为 `false` 时原图请求会在联网前被拒绝。这两个工具参数仅适用于 E 站。
+
+例如，模型可调用 `search` 搜索表站：
+
+```json
+{"site": "ehentai", "query": "landscape", "rating": "Non-H", "limit": 5, "use_exhentai": false}
+```
+
+调用 `download_post` 从里站下载指定画廊原图（将 `gid/token` 换成实际 ID）：
+
+```json
+{"site": "ehentai", "post_id": "gid/token", "use_exhentai": true, "original": true, "timeout": 300}
+```
+
+原图下载可能消耗 FIQ（原图额度）或 GP，具体由账号权益、画廊时间和站点规则决定，参见 [E-Hentai 官方下载说明](https://ehwiki.org/wiki/Downloading)。登录或额度错误会停止后续下载；原图入口失败时不会自动退回缩放图。没有独立原图入口、且页面未标注缩放的图片，使用页面直接提供的源图。
+
+页面图维持原目录；原图保存到该画廊的 `original/` 子目录，并保存独立清单。两种模式分别校验和复用，普通图不会被当作已完成的原图。结果中的 `post.extra.use_exhentai` 和 `post.extra.original` 表示本次选择。
 
 ## 下载结果
 
@@ -157,6 +189,8 @@ uv run media-hunter get pixiv "作品ID"
 uv run --extra animation media-hunter download-url "作品页面URL" --timeout 300
 uv run media-hunter download-search e621 "landscape" --rating safe --limit 3 --timeout 180
 uv run --extra animation media-hunter download pixiv "作品ID" --overwrite
+uv run media-hunter search ehentai "landscape" --no-use-exhentai --limit 5
+uv run media-hunter download ehentai "gid/token" --use-exhentai --original --timeout 300
 ```
 
 将示例中的 `作品ID` 替换为实际数字 ID，将 `作品页面URL` 替换为完整页面链接；E-Hentai 的 ID 使用 `"gid/token"` 格式。
@@ -171,7 +205,7 @@ uv run ruff check src tests
 uv run ruff format --check src tests
 ```
 
-测试默认不访问外部站点，覆盖 OAuth 续期、站点解析、下载中断、共享重试预算、取消清理、哈希复用、站点队列、文件上限、镜像画廊分页、真实 ffmpeg 逐帧时序、新旧版 stdio MCP 子进程及 Streamable HTTP 请求。手动联网检查：
+测试默认不访问外部站点，覆盖 OAuth 续期、站点解析、下载中断、共享重试预算、取消清理、哈希复用、站点队列、文件上限、镜像画廊分页、表里站并发隔离、原图重定向与额度错误、原图独立复用、真实 ffmpeg 逐帧时序、新旧版 stdio MCP 子进程及 Streamable HTTP 请求。手动联网检查：
 
 ```powershell
 uv run --extra animation python tests/live_smoke.py

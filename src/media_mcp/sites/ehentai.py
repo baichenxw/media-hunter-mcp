@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+from email.message import Message
+from functools import partial
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
@@ -17,6 +19,7 @@ from ..models import (
     Post,
     QuotaError,
     SiteNetworkError,
+    ValidationError,
 )
 from ..network import response_json
 from .base import SiteAdapter
@@ -40,23 +43,47 @@ CATEGORIES = {
 class EHentaiAdapter(SiteAdapter):
     name = "ehentai"
 
+    def __init__(self, config, network, *, use_exhentai=None, original=False):
+        super().__init__(config, network)
+        self.use_exhentai = (
+            config.site_get(self.name, "use_exhentai", True)
+            if use_exhentai is None
+            else use_exhentai
+        )
+        self.original = original
+        if original and not config.site_get(self.name, "allow_original", True):
+            raise ValidationError("配置禁止下载原图", "将 sites.ehentai.allow_original 设为 true")
+
+    def with_options(self, *, use_exhentai=None, original=False):
+        # 每次调用独立实例，共享网络限速器，不修改服务中其他调用的状态。
+        return EHentaiAdapter(
+            self._config, self._network, use_exhentai=use_exhentai, original=original
+        )
+
+    def _mirror(self):
+        key = "exhentai_mirror_base" if self.use_exhentai else "mirror_base"
+        return str(self._config.site_get(self.name, key, "") or "").rstrip("/")
+
     # ---- 基础设施 ----
 
     def _cookie(self) -> str:
         return str(self._config.site_get("ehentai", "cookie", "") or "")
 
     def _base(self) -> str:
-        mirror = str(self._config.site_get("ehentai", "mirror_base", "") or "")
+        if self.use_exhentai and not self._cookie():
+            raise AuthError(
+                "ExHentai 需要 cookie", "填写 cookie，或本次调用设置 use_exhentai=false"
+            )
+        mirror = self._mirror()
         if mirror:
             return mirror.rstrip("/")
-        if self._config.site_get("ehentai", "use_exhentai", False) and self._cookie():
+        if self.use_exhentai:
             return "https://exhentai.org"
-        if self._config.site_get("ehentai", "use_exhentai", False):
-            raise AuthError("ExHentai 需要 cookie", "填写 cookie 或将 use_exhentai 设为 false")
         return "https://e-hentai.org"
 
     def _api_url(self) -> str:
-        mirror = str(self._config.site_get("ehentai", "mirror_base", "") or "")
+        self._base()  # 在发送任何请求前校验里站凭证。
+        mirror = self._mirror()
         if mirror:
             return f"{mirror.rstrip('/')}/api.php"
         if self._base().endswith("exhentai.org"):
@@ -72,7 +99,7 @@ class EHentaiAdapter(SiteAdapter):
 
     async def _get_text(self, url: str, params: dict | None = None) -> str:
         response = await self._network.request(
-            self.name, "GET", url, params=params, headers=self._headers()
+            self.name, "GET", url, params=params, headers=self._headers(), allow_mirror=False
         )
         content_type = response.headers.get("content-type", "")
         if content_type.startswith("image/"):
@@ -157,6 +184,7 @@ class EHentaiAdapter(SiteAdapter):
                     "namespace": 1,
                 },
                 headers=self._headers(),
+                allow_mirror=False,
             )
             if response.status_code != 200:
                 raise SiteNetworkError(f"E-Hentai API 返回 HTTP {response.status_code}")
@@ -189,7 +217,12 @@ class EHentaiAdapter(SiteAdapter):
             media_type=MediaType.GALLERY,
             preview_url=str(meta.get("thumb", "")) or None,
             page_count=int(meta.get("filecount", 0) or 0),
-            extra={"gid": gid, "token": token, "posted": meta.get("posted", "")},
+            extra={
+                "gid": gid,
+                "token": token,
+                "posted": meta.get("posted", ""),
+                "use_exhentai": self.use_exhentai,
+            },
         )
 
     async def get_post(self, post_id: str) -> Post:
@@ -204,24 +237,43 @@ class EHentaiAdapter(SiteAdapter):
     # ---- 下载目标解析 ----
 
     async def get_download_targets(self, post: Post) -> list[DownloadTarget]:
+        post.extra["original"] = self.original
         gid = str(post.extra.get("gid") or post.id.split("/")[0])
         token = str(post.extra.get("token") or post.id.split("/")[1])
         page_urls = await self._collect_page_urls(gid, token, post.page_count)
         return [
-            DownloadTarget(url, f"{page:03d}.jpg", page=page, resolve=self._resolve_target)
+            DownloadTarget(
+                url,
+                f"{page:03d}.jpg",
+                page=page,
+                resolve=self._resolve_target,
+                post_process_meta={"original": True} if self.original else {},
+            )
             for page, url in enumerate(page_urls, start=1)
         ]
 
     async def _resolve_target(self, target: DownloadTarget) -> DownloadTarget:
-        image_url = await self._resolve_image_url(target.url)
+        image_url = await self._resolve_image_url(target.url, original=self.original)
         ext = urlsplit(image_url).path.rsplit(".", 1)[-1].lower()
         if ext not in IMG_EXTS:
             ext = "jpg"
+        headers = {"Referer": target.url, "User-Agent": self._headers()["User-Agent"]}
+        image_parts = urlsplit(image_url)
+        if (
+            self.original
+            and image_parts.netloc == urlsplit(self._base()).netloc
+            and image_parts.scheme == urlsplit(self._base()).scheme
+            and re.search(r"/fullimg(?:\.php)?(?:/|$)", image_parts.path)
+        ):
+            headers.update(self._headers())
         return DownloadTarget(
             image_url,
             f"{target.page:03d}.{ext}",
             page=target.page,
-            headers={"Referer": target.url, "User-Agent": self._headers()["User-Agent"]},
+            headers=headers,
+            response_filename=partial(self._original_filename, page=target.page)
+            if self.original
+            else None,
         )
 
     async def _collect_page_urls(self, gid: str, token: str, page_count: int) -> list[str]:
@@ -258,7 +310,7 @@ class EHentaiAdapter(SiteAdapter):
             raise SiteNetworkError(f"E-Hentai 画廊页面不完整：预期 {page_count}，找到 {len(found)}")
         return [found[i] for i in sorted(found) if not page_count or i <= page_count]
 
-    async def _resolve_image_url(self, page_url: str) -> str:
+    async def _resolve_image_url(self, page_url: str, *, original=False) -> str:
         html = await self._get_text(page_url)
         soup = BeautifulSoup(html, "html.parser")
         img = soup.find("img", id="img")
@@ -280,7 +332,83 @@ class EHentaiAdapter(SiteAdapter):
                 "E-Hentai 图片配额已用尽",
                 hint="等待配额恢复，或配置镜像",
             )
+        if original:
+            for anchor in soup.find_all("a", href=True):
+                parts = urlsplit(urljoin(page_url, anchor["href"]))
+                endpoint = re.search(r"/fullimg(?:\.php)?(?:/|$)", parts.path)
+                if not endpoint:
+                    continue
+                base = self._base()
+                if (
+                    parts.scheme not in {"http", "https"}
+                    or parts.username
+                    or parts.netloc not in {"e-hentai.org", "exhentai.org", urlsplit(base).netloc}
+                ):
+                    raise SiteNetworkError("原图入口地址不可信")
+                if not self._cookie():
+                    raise AuthError("下载原图需要站点 Cookie", "填写 sites.ehentai.cookie")
+                path = parts.path[endpoint.start() :]
+                return f"{base}{path}" + (f"?{parts.query}" if parts.query else "")
+            visible_text = soup.get_text(" ", strip=True).lower()
+            if "resampled" in visible_text or "download original" in visible_text:
+                raise NotFoundError(
+                    "图片经过缩放，但页面未提供原图入口", "检查账号权限或选择 original=false"
+                )
+            # 未缩放的图片没有单独的 fullimg 入口，页面图本身就是源图。
         return urljoin(page_url, src)
+
+    @staticmethod
+    async def _original_filename(response, *, page):
+        """原图入口可重定向或直接响应；只消费同一次 GET，错误页不落盘。"""
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if "/509" in response.url.path:
+            raise QuotaError("E-Hentai 原图额度不足")
+        if content_type.startswith("text/"):
+            data = bytearray()
+            async for chunk in response.aiter_bytes(4096):
+                data.extend(chunk[: 65536 - len(data)])
+                if len(data) >= 65536:
+                    break
+            text = data.decode("utf-8", errors="replace").lower()
+            if any(
+                term in text
+                for term in (
+                    "exceeded",
+                    "insufficient",
+                    "not enough",
+                    "not have enough",
+                    "quota",
+                    "temporarily banned",
+                )
+            ):
+                raise QuotaError(
+                    "E-Hentai 原图额度或 GP 不足", "查看站点额度，或选择 original=false"
+                )
+            if any(term in text for term in ("log in", "login", "not logged", "sad panda")):
+                raise AuthError("E-Hentai 原图下载需要有效登录", "更新 Cookie 或检查访问权限")
+            raise SiteNetworkError("原图入口返回错误页面，未保存为原图")
+        types = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/webp": "webp",
+            "image/avif": "avif",
+            "image/jxl": "jxl",
+            "image/bmp": "bmp",
+            "image/tiff": "tiff",
+        }
+        message = Message()
+        message["Content-Disposition"] = response.headers.get("content-disposition", "")
+        filename = message.get_filename() or response.url.path
+        extension = filename.rsplit(".", 1)[-1].lower()
+        extension = types.get(content_type, extension)
+        if extension not in set(types.values()) | {"jpeg"} or content_type not in {
+            *types,
+            "application/octet-stream",
+            "",
+        }:
+            raise SiteNetworkError("原图响应不是可识别的图片")
+        return f"{page:03d}.{extension}"
 
     # ---- 其他 ----
 

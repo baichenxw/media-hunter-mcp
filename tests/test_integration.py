@@ -18,7 +18,7 @@ async def service(tmp_path):
         sites={
             "e621": {"request_interval": 0},
             "rule34": {"request_interval": 0, "user_id": "1", "api_key": "test-secret"},
-            "ehentai": {"request_interval": 0},
+            "ehentai": {"use_exhentai": False, "request_interval": 0},
             "pixiv": {"request_interval": 0, "refresh_token": "test-token"},
         },
     )

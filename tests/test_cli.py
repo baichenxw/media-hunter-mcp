@@ -28,3 +28,22 @@ def test_cli_config_error_is_actionable_and_json(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "network.timeout" in json.loads(output)["error"]["message"]
     assert "SECRET" not in output
+
+
+@pytest.mark.parametrize(
+    "operation", ["search", "get", "download", "download-url", "download-search", "check"]
+)
+def test_cli_ehentai_site_options(operation):
+    tail = {
+        "search": ["ehentai", "landscape"],
+        "get": ["ehentai", "12/abc"],
+        "download": ["ehentai", "12/abc"],
+        "download-url": ["https://exhentai.org/g/12/abc/"],
+        "download-search": ["ehentai", "landscape"],
+        "check": [],
+    }[operation]
+    assert parser().parse_args([operation, *tail]).use_exhentai is None
+    assert parser().parse_args([operation, *tail, "--use-exhentai"]).use_exhentai is True
+    assert parser().parse_args([operation, *tail, "--no-use-exhentai"]).use_exhentai is False
+    if operation.startswith("download"):
+        assert parser().parse_args([operation, *tail, "--original"]).original

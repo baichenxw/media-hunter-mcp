@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 
+import httpx
+
 
 class MediaType(StrEnum):
     IMAGE = "image"
@@ -59,6 +61,10 @@ class DownloadTarget:
     post_process_meta: dict = field(default_factory=dict)
     # 仅在进程内使用；画廊在真正下载前才解析短期有效的图片 URL。
     resolve: Callable[[DownloadTarget], Awaitable[DownloadTarget]] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # 在同一次流式 GET 中校验响应、确定文件名，避免原图入口被重复请求。
+    response_filename: Callable[[httpx.Response], Awaitable[str]] | None = field(
         default=None, repr=False, compare=False
     )
 

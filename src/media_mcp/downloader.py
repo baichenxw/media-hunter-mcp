@@ -97,6 +97,8 @@ class Downloader:
         if post.site == "ehentai":
             gid = sanitize(post.extra.get("gid") or post.id.split("/")[0], 20)
             root /= f"{gid}_{sanitize(post.title, 40)}"
+            if post.extra.get("original"):
+                root /= "original"
         elif post.site == "pixiv":
             author = sanitize(post.artist[0], 40) if post.artist else "unknown"
             root /= f"{author}_{sanitize(post.extra.get('user_id', 0), 20)}"
@@ -161,7 +163,9 @@ class Downloader:
                         name = safe_filename(target.filename)
                         reserve_name(index, name)
                         path = directory / name
-                    digest = await self._download_one(post.site, target, path)
+                    digest, path = await self._download_one(
+                        post.site, target, path, reserve_filename=lambda n: reserve_name(index, n)
+                    )
                     if (
                         target.post_process == "ugoira"
                         and self._config.site_get("pixiv", "ugoira_format", "gif") != "zip"
@@ -278,7 +282,9 @@ class Downloader:
         except OSError:
             return None
 
-    async def _download_one(self, site: str, target: DownloadTarget, path: Path):
+    async def _download_one(
+        self, site: str, target: DownloadTarget, path: Path, *, reserve_filename=None
+    ):
         if path.is_symlink():
             raise ValidationError("目标文件是符号链接")
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".part", delete=False) as fh:
@@ -305,6 +311,13 @@ class Downloader:
                             await asyncio.sleep(delay)
                             continue
                         check_response(response, site)
+                        if target.response_filename:
+                            name = safe_filename(await target.response_filename(response))
+                            if reserve_filename:
+                                reserve_filename(name)
+                            path = path.parent / name
+                            if path.is_symlink():
+                                raise ValidationError("目标文件是符号链接")
                         content_type = response.headers.get("content-type", "").lower()
                         if any(t in content_type for t in ("text/", "json", "xml")):
                             raise SiteNetworkError("下载地址返回网页或错误信息，未保存为媒体文件")
@@ -327,7 +340,7 @@ class Downloader:
                         ):
                             raise httpx.ReadError("文件内容不完整")
                     temporary.replace(path)
-                    return digest.hexdigest()
+                    return digest.hexdigest(), path
                 except httpx.TransportError:
                     if attempt + 1 == self._config.network.retries:
                         raise SiteNetworkError("文件传输中断，已清理未完成文件") from None

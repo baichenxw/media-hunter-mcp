@@ -76,9 +76,16 @@ class Config:
                 maximum=16,
                 integer=True,
             )
-            if "use_exhentai" in values and not isinstance(values["use_exhentai"], bool):
-                raise ValidationError(f"sites.{name}.use_exhentai 必须是 true 或 false")
-            for key in ("mirror_base", "api_base", "image_mirror", "oauth_base"):
+            for key in ("use_exhentai", "allow_original"):
+                if key in values and not isinstance(values[key], bool):
+                    raise ValidationError(f"sites.{name}.{key} 必须是 true 或 false")
+            for key in (
+                "mirror_base",
+                "exhentai_mirror_base",
+                "api_base",
+                "image_mirror",
+                "oauth_base",
+            ):
                 if value := values.get(key):
                     try:
                         parts = urlsplit(value) if isinstance(value, str) else None

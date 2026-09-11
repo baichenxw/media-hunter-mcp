@@ -68,7 +68,7 @@ async def test_concurrency_and_partial_failure(tmp_path, monkeypatch):
     )
     active = peak = 0
 
-    async def download(site, target, path):
+    async def download(site, target, path, **kwargs):
         nonlocal active, peak
         active += 1
         peak = max(active, peak)
@@ -77,6 +77,7 @@ async def test_concurrency_and_partial_failure(tmp_path, monkeypatch):
             if target.page == 2:
                 raise OSError("disk error")
             path.write_bytes(b"ok")
+            return None, path
         finally:
             active -= 1
 
