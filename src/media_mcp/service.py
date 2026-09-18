@@ -101,11 +101,23 @@ class MediaService:
 
     async def _execute(self, operation, **kwargs):
         try:
+            if operation not in {
+                "search",
+                "get_post",
+                "download_post",
+                "download_posts",
+                "download_url",
+                "self_check",
+            }:
+                raise ValidationError(
+                    "未知操作或已移除的搜索下载混合入口",
+                    "先调用 media_hunter_search，再将选定 ID 数组交给 media_hunter_download",
+                )
             timeout = kwargs.pop("timeout", None)
             if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
                 raise ValidationError("timeout 必须为正秒数，或省略表示不限总时长")
-            if operation == "download_search":
-                data = await self.download_search(timeout=timeout, **kwargs)
+            if operation == "download_posts":
+                data = await self.download_posts(timeout=timeout, **kwargs)
             else:
                 async with asyncio.timeout(timeout):
                     data = await getattr(self, operation)(**kwargs)
@@ -115,7 +127,7 @@ class MediaService:
             if not complete:
                 envelope["error"] = {
                     "type": "partial_download",
-                    "message": "部分文件或作品未完成，详见 data.errors",
+                    "message": "部分文件或作品未完成，详见 data.errors 和 data.skipped（如有）",
                     "hint": "成功文件已保留",
                 }
             return self._redact(envelope)
@@ -168,7 +180,11 @@ class MediaService:
     @staticmethod
     def _validate_id(site, post_id):
         pattern = r"\d+/[0-9a-f]+" if site == "ehentai" else r"\d+"
-        if site in SITE_LIMITS and not re.fullmatch(pattern, post_id):
+        if (
+            not isinstance(post_id, str)
+            or not post_id.strip()
+            or (site in SITE_LIMITS and not re.fullmatch(pattern, post_id))
+        ):
             raise ValidationError(
                 "post_id 应为 gid/token" if site == "ehentai" else "post_id 必须是数字 ID"
             )
@@ -177,6 +193,8 @@ class MediaService:
         self, site, query, limit=20, page=1, min_score=None, rating=None, use_exhentai=None
     ):
         adapter = self.adapter(site, use_exhentai=use_exhentai)
+        if not isinstance(query, str) or not query.strip():
+            raise ValidationError("query 必须是非空的站点标签或关键词")
         options = self._search_options(adapter.name, limit, page, min_score, rating)
         posts = await adapter.search(query, **options)
         return {
@@ -231,58 +249,57 @@ class MediaService:
                 )
         raise ValidationError("无法识别的 URL", "请提供四个受支持站点的作品或画廊页面链接")
 
-    async def download_search(
+    async def download_posts(
         self,
         site,
-        query,
-        limit=10,
-        min_score=None,
-        rating=None,
+        post_ids,
         subdir=None,
         timeout=None,
         overwrite=False,
         use_exhentai=None,
         original=False,
     ):
+        """按显式 ID 下载；去重后单作品不限文件数，多作品共享文件预算。"""
         adapter = self.adapter(site, use_exhentai=use_exhentai, original=original)
-        options = self._search_options(adapter.name, limit, 1, min_score, rating)
-        if limit > MAX_BATCH_FILES:
-            raise ValidationError("批量下载 limit 最大为 50")
+        if not isinstance(post_ids, list) or not 1 <= len(post_ids) <= MAX_BATCH_FILES:
+            raise ValidationError("post_ids 必须是含 1–50 个作品 ID 的数组")
+        # 整批先校验再联网，避免处理到中途才发现坏参数。
+        for post_id in post_ids:
+            self._validate_id(adapter.name, post_id)
+        post_ids = list(dict.fromkeys(post_ids))
+        file_budget = MAX_BATCH_FILES if len(post_ids) > 1 else None
         results, errors, skipped = [], [], []
         attempted = total = reused = 0
         current_id = None
         stop_reason = None
+        budget_reason = (
+            "整本文件数超过本批剩余额度；如仍需下载，调用 media_hunter_download，"
+            "post_ids 仅填写该作品 ID"
+        )
         try:
             async with asyncio.timeout(timeout):
                 await report_progress(f"{adapter.name}：等待下载队列")
                 async with self._download_lock(adapter.name):
-                    await report_progress(f"{adapter.name}：搜索待下载作品")
-                    posts = await adapter.search(query, **options)
-                    for post in posts:
+                    for post_id in post_ids:
                         if stop_reason:
                             skipped.append(
-                                {"id": post.id, "reason": "站点拒绝访问，已停止本批后续请求"}
+                                {"id": post_id, "reason": "站点拒绝访问，已停止本批后续请求"}
                             )
                             continue
-                        current_id = post.id
-                        remaining = MAX_BATCH_FILES - attempted
-                        if post.page_count > remaining or remaining == 0:
-                            skipped.append(
-                                {
-                                    "id": post.id,
-                                    "reason": "整本文件数超过本批剩余额度，请单独调用 download_post",
-                                }
-                            )
+                        remaining = file_budget - attempted if file_budget is not None else None
+                        if remaining == 0:
+                            skipped.append({"id": post_id, "reason": budget_reason})
                             continue
+                        current_id = post_id
                         try:
+                            await report_progress(f"{adapter.name}：获取选定作品 {post_id} 的详情")
+                            post = await adapter.get_post(post_id)
+                            if remaining is not None and post.page_count > remaining:
+                                skipped.append({"id": post_id, "reason": budget_reason})
+                                continue
                             targets = await adapter.get_download_targets(post)
-                            if len(targets) > remaining:
-                                skipped.append(
-                                    {
-                                        "id": post.id,
-                                        "reason": "整本文件数超过本批剩余额度，请单独调用 download_post",
-                                    }
-                                )
+                            if remaining is not None and len(targets) > remaining:
+                                skipped.append({"id": post_id, "reason": budget_reason})
                                 continue
                             attempted += len(targets)
                             data = await self._download(
@@ -290,9 +307,9 @@ class MediaService:
                             )
                             total += len(data["files"])
                             reused += data.get("reused_files", 0)
-                            results.append({"id": post.id, **data})
+                            results.append({"id": post_id, **data})
                             errors.extend(
-                                {"id": post.id, **error} for error in data.get("errors", [])
+                                {"id": post_id, **error} for error in data.get("errors", [])
                             )
                             stop_reason = next(
                                 (
@@ -304,7 +321,7 @@ class MediaService:
                             )
                         except Exception as exc:
                             error = self._error(exc)
-                            errors.append({"id": post.id, **error})
+                            errors.append({"id": post_id, **error})
                             if error["type"] in {"auth", "quota"}:
                                 stop_reason = error
         except TimeoutError:
@@ -315,7 +332,14 @@ class MediaService:
                     "message": "时间预算已耗尽；当前作品的已完成文件记录在其 sidecar 中",
                 }
             )
+            reported = {row["id"] for row in results + errors + skipped}
+            skipped.extend(
+                {"id": post_id, "reason": "批量任务超时，尚未处理"}
+                for post_id in post_ids
+                if post_id not in reported
+            )
         return {
+            "requested_ids": post_ids,
             "downloaded": results,
             "errors": errors,
             "skipped": skipped,

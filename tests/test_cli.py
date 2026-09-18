@@ -10,7 +10,7 @@ from media_mcp.cli import main, parser
     [
         ["download", "pixiv", "1"],
         ["download-url", "https://www.pixiv.net/artworks/1"],
-        ["download-search", "pixiv", "landscape"],
+        ["download-posts", "pixiv", "1", "2"],
     ],
 )
 def test_cli_overwrite_option(command):
@@ -31,7 +31,7 @@ def test_cli_config_error_is_actionable_and_json(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
-    "operation", ["search", "get", "download", "download-url", "download-search", "check"]
+    "operation", ["search", "get", "download", "download-url", "download-posts", "check"]
 )
 def test_cli_ehentai_site_options(operation):
     tail = {
@@ -39,7 +39,7 @@ def test_cli_ehentai_site_options(operation):
         "get": ["ehentai", "12/abc"],
         "download": ["ehentai", "12/abc"],
         "download-url": ["https://exhentai.org/g/12/abc/"],
-        "download-search": ["ehentai", "landscape"],
+        "download-posts": ["ehentai", "12/abc", "13/def"],
         "check": [],
     }[operation]
     assert parser().parse_args([operation, *tail]).use_exhentai is None

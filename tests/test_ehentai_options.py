@@ -86,7 +86,7 @@ async def test_disabled_original_fails_before_network(tmp_path):
         ("search", {"query": "landscape"}),
         ("get_post", {"post_id": "12"}),
         ("download_post", {"post_id": "12"}),
-        ("download_search", {"query": "landscape"}),
+        ("download_posts", {"post_ids": ["12"]}),
     ],
 )
 async def test_ehentai_option_rejected_for_other_sites(service, operation, args):
@@ -197,24 +197,12 @@ async def test_original_falls_back_only_when_page_image_is_not_resampled(service
 
 async def test_original_permission_error_stops_batch_without_writing_html(service):
     with respx.mock:
-        respx.get("https://exhentai.org/").respond(
-            200, text='<a href="/g/12/abc/">1</a><a href="/g/13/def/">2</a>'
-        )
         gallery_routes()
-        respx.post("https://exhentai.org/api.php").respond(
-            200,
-            json={
-                "gmetadata": [
-                    META["gmetadata"][0],
-                    {"gid": 13, "token": "def", "title": "second", "filecount": "1"},
-                ]
-            },
-        )
         entry = respx.get("https://exhentai.org/fullimg.php").respond(
             200, text="You do not have enough GP to download this image."
         )
         result = await service.execute(
-            "download_search", site="ehentai", query="landscape", original=True
+            "download_posts", site="ehentai", post_ids=["12/abc", "13/def"], original=True
         )
         assert not result["success"]
         assert result["data"]["stop_reason"]["type"] == "quota"
@@ -290,13 +278,14 @@ async def test_mcp_schema_and_actual_call_options(service, mode):
             for name in tools:
                 props = tools[name].input_schema["properties"]
                 assert "use_exhentai" in props
-                if name.startswith("download_"):
+                if name.startswith("media_hunter_download"):
                     assert (
                         props["original"]["type"] == "boolean"
                         and props["original"]["default"] is False
                     )
             result = await client.call_tool(
-                "get_post", {"site": "ehentai", "post_id": "12/abc", "use_exhentai": False}
+                "media_hunter_get_post",
+                {"site": "ehentai", "post_id": "12/abc", "use_exhentai": False},
             )
             assert json.loads(result.content[0].text)["data"]["extra"]["use_exhentai"] is False
 
@@ -327,10 +316,15 @@ async def test_download_mcp_passes_both_options(service):
         )
         async with Client(create_server(service=service)) as client:
             result = await client.call_tool(
-                "download_post",
-                {"site": "ehentai", "post_id": "12/abc", "use_exhentai": False, "original": True},
+                "media_hunter_download",
+                {
+                    "site": "ehentai",
+                    "post_ids": ["12/abc"],
+                    "use_exhentai": False,
+                    "original": True,
+                },
             )
-            data = json.loads(result.content[0].text)["data"]
+            data = json.loads(result.content[0].text)["data"]["downloaded"][0]
             assert data["post"]["extra"]["original"]
             assert not data["post"]["extra"]["use_exhentai"]
             assert Path(data["files"][0]["path"]).name == "001.png"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastmcp import Context, FastMCP
 from fastmcp.tools import ToolResult
@@ -45,7 +45,186 @@ DOWNLOAD_ANNOTATIONS = {
     "idempotentHint": False,
     "openWorldHint": True,
 }
-PositiveTimeout = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+Site = Annotated[
+    Literal["e621", "rule34", "ehentai", "pixiv"],
+    Field(
+        description="目标站点。表站 E-Hentai 和里站 ExHentai 都填 ehentai，用 use_exhentai 区分。"
+    ),
+]
+PostId = Annotated[
+    str,
+    Field(
+        min_length=1,
+        description="作品 ID 字符串，优先从搜索结果 posts[].id 原样复制。E 站为 gid/token（如 123/abc123），其他站为数字字符串（如 123）。不是页面 URL。",
+    ),
+]
+Subdir = Annotated[
+    str | None,
+    Field(
+        description="下载根目录下的可选分组名（例如 landscape）；不是任意绝对路径。省略使用默认站点目录。",
+    ),
+]
+PositiveTimeout = Annotated[
+    float | None,
+    Field(
+        gt=0,
+        allow_inf_nan=False,
+        description="本次操作的总超时秒数，含排队、详情请求、下载和合成；省略或 null 不限制总时长。",
+    ),
+]
+Overwrite = Annotated[
+    bool,
+    Field(
+        description="false 校验并复用已下载文件；true 强制重新下载，成功后替换已有文件。",
+    ),
+]
+EHChoice = Annotated[
+    bool | None,
+    Field(
+        description="仅 E 站：true 里站（需要有效 Cookie），false 表站；省略/null 沿用配置（默认里站）。接续搜索结果时复制 posts[].extra.use_exhentai；其他站省略。",
+    ),
+]
+EHUrlChoice = Annotated[
+    bool | None,
+    Field(
+        description="仅 E 站：true 强制里站，false 强制表站；省略/null 按 URL 域名选择。其他站省略。",
+    ),
+]
+Original = Annotated[
+    bool,
+    Field(
+        description="仅 E 站可设 true：请求原图，可能消耗 FIQ/GP，须配置 allow_original=true。false 使用页面图。原图单独保存，失败不退回缩放图。其他站保持 false。",
+    ),
+]
+
+POST_SCHEMA = {
+    "type": "object",
+    "description": "作品元数据；提供 ID 和页面链接，不代表文件已下载。",
+    "properties": {
+        "site": {"type": "string", "description": "站点标识"},
+        "id": {"type": "string", "description": "放入 media_hunter_download 的 post_ids 数组"},
+        "url": {"type": "string", "description": "作品页面 URL，可传给 media_hunter_download_url"},
+        "title": {"type": "string"},
+        "page_count": {"type": "integer", "description": "整部作品的页数/文件数估计"},
+        "extra": {"type": "object", "description": "站点额外信息；E 站 use_exhentai 表示本次选择"},
+    },
+    "required": ["site", "id", "url"],
+}
+DOWNLOAD_DATA_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "post": POST_SCHEMA,
+        "directory": {"type": "string", "description": "服务器本地输出目录"},
+        "files": {
+            "type": "array",
+            "description": "已完成/复用文件（不是公共下载链接）",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "服务器本地文件路径"},
+                    "page": {"type": "integer"},
+                    "size": {"type": "integer"},
+                    "reused": {"type": "boolean"},
+                },
+            },
+        },
+        "sidecar_path": {"type": "string", "description": "元数据及下载清单 JSON 的本地路径"},
+        "errors": {"type": "array", "items": {"type": "object"}},
+        "complete": {"type": "boolean", "description": "是否全部完成"},
+        "new_files": {"type": "integer"},
+        "reused_files": {"type": "integer"},
+    },
+    "required": ["post", "directory", "files", "sidecar_path", "errors", "complete"],
+}
+
+
+def result_schema(data_schema):
+    """按工具描述 data 的结构，同时允许仅含 error 的失败结果。"""
+    return {**OUTPUT_SCHEMA, "properties": {**OUTPUT_SCHEMA["properties"], "data": data_schema}}
+
+
+SEARCH_OUTPUT = result_schema(
+    {
+        "type": "object",
+        "properties": {
+            "posts": {"type": "array", "items": POST_SCHEMA},
+            "count": {"type": "integer", "description": "本页过滤后的结果数量，不是站点总数"},
+            "page": {"type": "integer"},
+            "limit": {"type": "integer"},
+        },
+        "required": ["posts", "count", "page", "limit"],
+    }
+)
+POST_OUTPUT = result_schema(POST_SCHEMA)
+DOWNLOAD_OUTPUT = result_schema(DOWNLOAD_DATA_SCHEMA)
+SELECTED_DOWNLOAD_OUTPUT = result_schema(
+    {
+        "type": "object",
+        "properties": {
+            "requested_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "按输入顺序去重后的选定 ID",
+            },
+            "downloaded": {
+                "type": "array",
+                "items": {
+                    **DOWNLOAD_DATA_SCHEMA,
+                    "properties": {"id": {"type": "string"}, **DOWNLOAD_DATA_SCHEMA["properties"]},
+                    "required": ["id", *DOWNLOAD_DATA_SCHEMA["required"]],
+                },
+                "description": "已处理作品，每项带 id 及单作品下载结果，也可能包含部分失败",
+            },
+            "errors": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "带作品 id 的失败原因",
+            },
+            "skipped": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "未处理的 id 及 reason（预算、超时或站点拒绝）",
+            },
+            "total_files": {"type": "integer", "description": "已返回结果的新下载与复用文件总数"},
+            "attempted_files": {
+                "type": "integer",
+                "description": "已进入处理的文件目标数，包含复用及失败目标；去重后多个 ID 时最多 50，单 ID 不限",
+            },
+            "new_files": {"type": "integer"},
+            "reused_files": {"type": "integer"},
+            "stop_reason": {
+                "type": ["object", "null"],
+                "description": "登录/额度错误导致的停止原因，否则 null；其他错误查看 errors",
+            },
+            "complete": {"type": "boolean"},
+        },
+        "required": [
+            "requested_ids",
+            "downloaded",
+            "errors",
+            "skipped",
+            "total_files",
+            "attempted_files",
+            "complete",
+        ],
+    }
+)
+CHECK_OUTPUT = result_schema(
+    {
+        "type": "object",
+        "description": "检查结果按站点组织；总体 success=true 不代表每站都可用，须读取各站 ok。",
+        "properties": {
+            site: {
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "detail": {"type": "string"},
+                },
+            }
+            for site in ("e621", "rule34", "ehentai", "pixiv")
+        },
+    }
+)
 
 
 def create_server(config: Config | None = None, service: MediaService | None = None) -> FastMCP:
@@ -69,6 +248,13 @@ def create_server(config: Config | None = None, service: MediaService | None = N
     app = FastMCP(
         "media-hunter-mcp",
         version=__version__,
+        instructions=(
+            "Media Hunter：只在 e621、rule34、E-Hentai/ExHentai、Pixiv 搜索与下载作品。"
+            "搜索用 media_hunter_search，不写入媒体文件；需要保存媒体时，将选定 ID 交给 "
+            "media_hunter_download 的 post_ids 数组（单个 ID 也用数组）。"
+            "已有作品页面 URL 可直接调用 media_hunter_download_url。"
+            "工具结果均为 success/data/error；失败或部分完成时查看 error 和 data 中的已完成文件。"
+        ),
         lifespan=lifespan,
         strict_input_validation=True,
         cache_ttl=60,
@@ -80,23 +266,55 @@ def create_server(config: Config | None = None, service: MediaService | None = N
         # 保留 JSON 文本及结构化清单，包括部分失败的成功文件。
         return ToolResult(structured_content=result, is_error=not result["success"])
 
-    @app.tool(title="搜索作品", annotations=READ_ANNOTATIONS, output_schema=OUTPUT_SCHEMA)
-    async def search(
-        site: str,
-        query: str,
+    @app.tool(
+        title="Media Hunter · 搜索作品（只读）",
+        annotations=READ_ANNOTATIONS,
+        output_schema=SEARCH_OUTPUT,
+    )
+    async def media_hunter_search(
+        site: Site,
+        query: Annotated[
+            str,
+            Field(
+                min_length=1,
+                pattern=r"\S",
+                description="站点原生标签或关键词。e621/rule34 使用空格分隔标签，如 landscape；Pixiv/E 站用标题或标签关键词，如 風景。",
+            ),
+        ],
         ctx: Context,
-        limit: Annotated[int, Field(ge=1, le=1000)] = 20,
-        page: Annotated[int, Field(ge=1)] = 1,
-        min_score: float | None = None,
-        rating: str | None = None,
-        use_exhentai: bool | None = None,
+        limit: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=1000,
+                description="单页请求条数；e621≤320，rule34≤1000，ehentai≤100，pixiv≤30。过滤后可能更少。不是下载数量。",
+            ),
+        ] = 20,
+        page: Annotated[
+            int,
+            Field(ge=1, description="搜索页码，从 1 开始；E 站最多 100 页，需逐页遍历，深页较慢。"),
+        ] = 1,
+        min_score: Annotated[
+            float | None,
+            Field(
+                allow_inf_nan=False,
+                description="最低站点评分；Pixiv 指收藏数，E 站指星级。省略不限。",
+            ),
+        ] = None,
+        rating: Annotated[
+            str | None,
+            Field(
+                description="e621：s/q/e 或 safe/questionable/explicit；rule34：safe/questionable/explicit；Pixiv：all/safe/r18/r18g；E 站：分类名，如 Manga、Non-H。省略不限。"
+            ),
+        ] = None,
+        use_exhentai: EHChoice = None,
     ) -> ToolResult:
-        """搜索 e621/rule34/ehentai/pixiv。query 使用站点原生标签或关键词。
-        page 从 1 开始；limit 上限分别为 320/1000/100/30。
-        rating：e621 s/q/e；rule34 safe/questionable/explicit；
-        pixiv all（不限）/safe/r18/r18g（精确等级）；ehentai 为画廊分类。
-        ehentai 的 use_exhentai=true 选里站、false 选表站，省略沿用配置（默认里站）。
-        min_score 为站点分数（Pixiv 收藏数、E-Hentai 星级）。过滤后可能少于 limit。
+        """按关键词发现作品，只读取搜索与元数据，不下载媒体、不创建下载目录。
+        适合用户尚未提供作品 ID/链接时调用。返回 data.posts（含 site/id/url/title/page_count）、count/page/limit。
+        count=0 表示当前页无匹配结果，可调整关键词、过滤条件或页码。
+        需要保存媒体时，把选定的 posts[].id 放入 media_hunter_download 的 post_ids 数组，单个或多个均可。
+        E 站接续按 ID 下载时，沿用结果 extra.use_exhentai；直接用结果 url 下载也可保持站点选择。
+        示例：{"site":"pixiv","query":"風景","rating":"safe","limit":5}。
         """
         return await call(
             "search",
@@ -110,37 +328,60 @@ def create_server(config: Config | None = None, service: MediaService | None = N
             use_exhentai=use_exhentai,
         )
 
-    @app.tool(title="获取作品详情", annotations=READ_ANNOTATIONS, output_schema=OUTPUT_SCHEMA)
-    async def get_post(
-        site: str, post_id: str, ctx: Context, use_exhentai: bool | None = None
+    @app.tool(
+        title="Media Hunter · 获取作品详情（只读）",
+        annotations=READ_ANNOTATIONS,
+        output_schema=POST_OUTPUT,
+    )
+    async def media_hunter_get_post(
+        site: Site, post_id: PostId, ctx: Context, use_exhentai: EHChoice = None
     ) -> ToolResult:
-        """作品完整元数据。post_id 为数字；ehentai 为 gid/token。
-        ehentai 的 use_exhentai=true 选里站、false 选表站，省略沿用配置（默认里站）。
+        """读取已知 ID 的作品详情，不搜索、不下载媒体、不创建下载目录。
+        用于下载前查看标题、标签、评分、页数；返回 data 中的作品元数据，ID 不存在时返回 not_found 错误。
+        ID 来自 media_hunter_search 的 posts[].id；E 站 ID 为 gid/token，其他站为数字字符串。
+        要保存文件请调用 media_hunter_download，post_ids=[该作品 ID]；已有页面链接可直接用 media_hunter_download_url。
         """
         return await call("get_post", ctx, site=site, post_id=post_id, use_exhentai=use_exhentai)
 
-    @app.tool(title="下载作品", annotations=DOWNLOAD_ANNOTATIONS, output_schema=OUTPUT_SCHEMA)
-    async def download_post(
-        site: str,
-        post_id: str,
+    @app.tool(
+        title="Media Hunter · 按 ID 下载作品（单个或多个）",
+        annotations=DOWNLOAD_ANNOTATIONS,
+        output_schema=SELECTED_DOWNLOAD_OUTPUT,
+    )
+    async def media_hunter_download(
+        site: Site,
+        post_ids: Annotated[
+            list[PostId],
+            Field(
+                min_length=1,
+                max_length=50,
+                description='同一站点明确选定的 1–50 个作品 ID 字符串；单个也用数组，如 ["123"]。不是关键词或 URL；E 站每项为 gid/token。先校验全部格式，再按输入顺序去重；去重后一个 ID 下载整部且不限文件数，多个 ID 共用 50 文件预算。',
+            ),
+        ],
         ctx: Context,
-        subdir: str | None = None,
-        timeout: PositiveTimeout | None = None,
-        overwrite: bool = False,
-        use_exhentai: bool | None = None,
-        original: bool = False,
+        subdir: Subdir = None,
+        timeout: PositiveTimeout = None,
+        overwrite: Overwrite = False,
+        use_exhentai: EHChoice = None,
+        original: Original = False,
     ) -> ToolResult:
-        """按 ID 下载整部作品，返回文件清单及 sidecar。subdir 为下载根目录下的分组名。
-        timeout 为覆盖等待、元数据、解析、下载及合成的总秒数。失败文件不会成为最终文件。
-        ehentai 的 use_exhentai=true 选里站、false 选表站，省略沿用配置。
-        original=true 下载原图（可能消耗 FIQ/GP），默认 false；须配置 allow_original=true（默认开启）。
-        默认跳过已通过清单和 SHA-256 校验的文件；overwrite=true 强制重新下载并替换。
+        """将明确选定的一部或多部作品保存到服务器本地；不搜索、不自动添加作品。未知 ID 先用 media_hunter_search。
+        单个也必须传 post_ids 数组，例如 {"site":"pixiv","post_ids":["123"]}；多个为 ["123","456"]。
+        去重后只有一个 ID：下载整部作品/画廊，不受 50 文件上限限制。
+        去重后多个 ID：整批最多处理 50 个文件目标，复用及失败目标也占预算；超出剩余预算的作品整部跳过，不截取前几页。
+        根据用户目标和页数自行分组；需要整本大画廊或补下预算跳过项时，用同一工具、post_ids 仅含该 ID。
+        不同站点、表/里站或原图设置分次调用。E 站接续搜索沿用 extra.use_exhentai；original=true 请求原图，须允许且可能消耗 FIQ/GP，失败不降级。
+        单个与多个均返回 data.requested_ids、downloaded（逐作品的 id/post/files/directory/sidecar_path/errors）、errors、skipped、total_files、stop_reason。
+        files[].path 是服务器本地路径。检查 success 和逐项 complete；失败/跳过会返回 success=false/isError=true，已完成文件保留。
+        登录/额度错误停止剩余作品，应先处理原因；普通作品错误继续后续项。按 errors/skipped 的 ID 决定重试，不必重新搜索。
+        默认 overwrite=false 校验复用成功文件，适合补齐；overwrite=true 强制重下。timeout 含排队、详情、下载与合成，省略不限时。
+        超时中断的作品可能不在 downloaded 中，已完成页记录在本地 sidecar，total_files 不计这些页；同 ID 重试会校验复用。
         """
         return await call(
-            "download_post",
+            "download_posts",
             ctx,
             site=site,
-            post_id=post_id,
+            post_ids=post_ids,
             subdir=subdir,
             timeout=timeout,
             overwrite=overwrite,
@@ -148,56 +389,30 @@ def create_server(config: Config | None = None, service: MediaService | None = N
             original=original,
         )
 
-    @app.tool(title="搜索并下载", annotations=DOWNLOAD_ANNOTATIONS, output_schema=OUTPUT_SCHEMA)
-    async def download_search(
-        site: str,
-        query: str,
+    @app.tool(
+        title="Media Hunter · 按页面链接下载",
+        annotations=DOWNLOAD_ANNOTATIONS,
+        output_schema=DOWNLOAD_OUTPUT,
+    )
+    async def media_hunter_download_url(
+        url: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="完整作品页面 URL：e621.net/posts/ID、rule34.xxx/index.php?page=post&s=view&id=ID、www.pixiv.net/artworks/ID，或 e-hentai.org/exhentai.org/g/gid/token/；须带 http(s)://。不接受搜索页或图片直链。",
+            ),
+        ],
         ctx: Context,
-        limit: Annotated[int, Field(ge=1, le=50)] = 10,
-        min_score: float | None = None,
-        rating: str | None = None,
-        subdir: str | None = None,
-        timeout: PositiveTimeout | None = None,
-        overwrite: bool = False,
-        use_exhentai: bool | None = None,
-        original: bool = False,
+        subdir: Subdir = None,
+        timeout: PositiveTimeout = None,
+        overwrite: Overwrite = False,
+        use_exhentai: EHUrlChoice = None,
+        original: Original = False,
     ) -> ToolResult:
-        """搜索并批量下载，最多尝试 50 个文件。超额画廊整本跳过，可用 download_post 单独下载。
-        返回 downloaded/errors/skipped；timeout 覆盖搜索和下载全流程。部分完成时 success=false，成功文件仍保留。
-        ehentai 的 use_exhentai=true 选里站、false 选表站；original=true 下载原图（可能消耗 FIQ/GP）。
-        原图须配置 allow_original=true（默认开启），original 默认 false。
-        默认校验并复用已完成文件；overwrite=true 强制重新下载。凭证或配额错误停止剩余批次。
-        """
-        return await call(
-            "download_search",
-            ctx,
-            site=site,
-            query=query,
-            limit=limit,
-            min_score=min_score,
-            rating=rating,
-            subdir=subdir,
-            timeout=timeout,
-            overwrite=overwrite,
-            use_exhentai=use_exhentai,
-            original=original,
-        )
-
-    @app.tool(title="按链接下载", annotations=DOWNLOAD_ANNOTATIONS, output_schema=OUTPUT_SCHEMA)
-    async def download_url(
-        url: str,
-        ctx: Context,
-        subdir: str | None = None,
-        timeout: PositiveTimeout | None = None,
-        overwrite: bool = False,
-        use_exhentai: bool | None = None,
-        original: bool = False,
-    ) -> ToolResult:
-        """识别四站作品页面 URL 并下载。timeout 为总秒数；不接受任意文件直链。
-        ehentai 默认按 URL 域名选表站或里站，也可用 use_exhentai 覆盖。
-        ehentai 的 use_exhentai=true 选里站、false 选表站；original=true 下载原图（可能消耗 FIQ/GP）。
-        原图须配置 allow_original=true（默认开启），original 默认 false。
-        默认校验并复用已完成文件；overwrite=true 强制重新下载并替换。
+        """已知作品页面 URL 时直接下载整部作品，自动识别站点与 ID；无需先搜索或手动拆解链接。
+        只接受四个受支持站点的作品/画廊页面，不搜索、不下载任意文件直链。
+        E 站默认按链接域名选表站/里站；显式 use_exhentai 可覆盖。原图须 original=true，可能消耗 FIQ/GP。
+        返回 data.files/sidecar_path 等本地路径，含复用标记；部分失败时 success=false，已完成文件仍保留。
         """
         return await call(
             "download_url",
@@ -210,10 +425,16 @@ def create_server(config: Config | None = None, service: MediaService | None = N
             original=original,
         )
 
-    @app.tool(title="检查站点连通性", annotations=READ_ANNOTATIONS, output_schema=OUTPUT_SCHEMA)
-    async def self_check(ctx: Context, use_exhentai: bool | None = None) -> ToolResult:
-        """并行检查四站凭证及 API 连通性，每站最多 45 秒；不下载媒体、不返回凭证。
-        use_exhentai 仅影响 E 站检查：true 里站、false 表站，省略沿用配置。
+    @app.tool(
+        title="Media Hunter · 检查连接和凭证（只读）",
+        annotations=READ_ANNOTATIONS,
+        output_schema=CHECK_OUTPUT,
+    )
+    async def media_hunter_self_check(ctx: Context, use_exhentai: EHChoice = None) -> ToolResult:
+        """诊断四个站点的账号配置与 API/首页连通性，每站最多 45 秒；不下载媒体、不返回凭证。
+        配置完成后或出现登录/连接错误时使用，不必在每次搜索前重复检查。
+        返回 data.<站点>.ok/detail 以及 download_root/proxy；必须逐站查看 ok，总体 success=true 仅表示检查已执行。
+        use_exhentai 只控制 E 站的检查目标；连通性通过不保证所有作品或媒体链接都可下载。
         """
         return await call("self_check", ctx, use_exhentai=use_exhentai)
 

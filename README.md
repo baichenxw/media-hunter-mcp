@@ -2,6 +2,27 @@
 
 搜索并下载 **e621、rule34.xxx、E-Hentai / ExHentai、Pixiv** 的作品。支持图片、视频、多图画廊及 Pixiv ugoira；提供 MCP 工具和独立命令行。
 
+## 1.3.2 更新
+
+- MCP 工具统一使用 `media_hunter_` 前缀，减少与其他服务重名；搜索与下载彻底分开，搜索只返回元数据。
+- 单作品和多作品下载统一为 `media_hunter_download`，使用 `post_ids` 数组并返回逐作品列表。去重后一个作品不限文件数，多个作品共用 50 文件预算。
+- 补全工具说明、参数约束和输出结构，明确表里站、原图、分组下载、额度、超时与重试规则，供模型根据任务自行决策。
+
+### 从 1.3.1 升级
+
+**本版调整了 MCP 工具名称和按 ID 下载的参数、返回结构。** 升级后重启 MCP 服务并刷新客户端工具列表；写死旧工具名的提示词或工作流需按下表迁移。已有 `config.toml` 可继续使用，E 站的表里站和原图配置保持有效。
+
+| 1.3.1 工具 | 1.3.2 对应调用 |
+| --- | --- |
+| `search` | `media_hunter_search`，只搜索元数据 |
+| `get_post` | `media_hunter_get_post`，继续使用 `post_id` |
+| `download_post` | `media_hunter_download`，将 `post_id` 改为 `post_ids: [该 ID]`；文件清单改读 `data.downloaded[].files` |
+| `download_search` | 先 `media_hunter_search`，选定结果后再 `media_hunter_download`；不再搜索后自动下载 |
+| `download_url` | `media_hunter_download_url`，继续使用 `url`，文件清单仍为 `data.files` |
+| `self_check` | `media_hunter_self_check` |
+
+旧 MCP 名称不再注册。曾使用开发版 `media_hunter_download_post` / `media_hunter_download_posts` 的调用也统一改为 `media_hunter_download`。命令行移除 `download-search`，改为先 `search`、再用 `download-posts` 下载选定 ID；`download` 和 `download-url` 保留。
+
 ## 1.3.1 更新
 
 - E 站支持每次调用选择表站/里站；默认使用里站，按链接下载时默认遵循链接域名。
@@ -59,10 +80,10 @@ Linux/macOS 将上述 `.\.venv\Scripts\` 替换为 `./.venv/bin/`，并去掉程
 也可直接从 GitHub 的版本标签安装或升级（需要 Git；此命令替代上面的本地安装命令）：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install --upgrade "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.1"
+.\.venv\Scripts\python.exe -m pip install --upgrade "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.2"
 ```
 
-直接安装不会在当前目录生成配置模板，请从 [v1.3.1 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.1/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
+直接安装不会在当前目录生成配置模板，请从 [v1.3.2 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.2/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
 
 接入 MCP 客户端时，将下方配置中的 `command` 改为仅含虚拟环境内 `media-mcp.exe` 绝对路径的数组，例如 `["C:/Projects/media-hunter-mcp/.venv/Scripts/media-mcp.exe"]`，并保留指向实际配置文件的 `MEDIA_HUNTER_CONFIG`。独立命令行示例则用该环境中的 `media-hunter` 替代 `uv run media-hunter`；安装时选择过 `[animation]` 后，无需再传 `--extra animation`。
 
@@ -118,45 +139,64 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 
 也支持 `MEDIA_HUNTER_TRANSPORT=http`（Streamable HTTP，默认 `/mcp` 路径）；默认监听 `127.0.0.1:8787`。可用 `MEDIA_HUNTER_HOST`、`MEDIA_HUNTER_PORT` 覆盖。`sse` 仅保留给旧客户端，新接入使用 stdio 或 Streamable HTTP。HTTP 模式未配置身份验证，应在受信任的本机环境使用。
 
-1.3.1 使用 FastMCP 4 / MCP Python SDK 2，支持 [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) 的 `server/discover`、按请求协商、`resultType` 及列表缓存字段，也兼容旧版 `initialize` 流程。传输和版本转换交给 SDK；业务代码不自行拼接协议消息。工具声明只读/写入行为、参数范围和输出 JSON Schema。工具执行失败使用 `isError=true`，同时保留 JSON 文本与 `structuredContent`，部分完成的文件清单不会丢失。列表缓存提示为 60 秒、private，不缓存下载调用结果。
+1.3.2 使用 FastMCP 4 / MCP Python SDK 2，支持 [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) 的 `server/discover`、按请求协商、`resultType` 及列表缓存字段，也兼容旧版 `initialize` 流程。传输和版本转换交给 SDK；业务代码不自行拼接协议消息。工具声明只读/写入行为、参数范围和输出 JSON Schema。工具执行失败使用 `isError=true`，同时保留 JSON 文本与 `structuredContent`，部分完成的文件清单不会丢失。列表缓存提示为 60 秒、private，不缓存下载调用结果。
 
 下载过程提供排队、详情、解析、文件完成和合成阶段的进度。只有客户端请求进度通知时才发送；消息中的页数表示当前作品进度，协议数值是单调递增的工作事件计数，总量未知时不伪造百分比。是否展示进度取决于客户端。
 
 ## 工具
 
-| 工具 | 功能 |
+| 工具 | 使用场景与结果 |
 | --- | --- |
-| `search` | 站点原生标签/关键词搜索，支持 `limit`、`page`、`min_score`、`rating` |
-| `get_post` | 作品元数据；E-Hentai 的 ID 格式为 `gid/token` |
-| `download_post` | 下载整部作品或整本画廊，不受批量 50 文件上限限制 |
-| `download_search` | 搜索并下载，整批最多尝试 50 个文件；超额画廊整本跳过 |
-| `download_url` | 严格识别四站作品页面 URL 后下载，不接受任意文件直链 |
-| `self_check` | 并行检查凭证与 API/首页连通性，每站最多 45 秒；不保证所有媒体链接可下载 |
+| `media_hunter_search` | 只搜索；返回 `data.posts`（含 `site/id/url/title/page_count`）及本页 `count/page/limit`，不下载文件 |
+| `media_hunter_get_post` | 读取已知 ID 的作品详情，返回 `data` 中的元数据，不下载文件 |
+| `media_hunter_download` | 只下载明确提供的同站点 `post_ids`，不搜索；输入 1–50 个 ID，去重后一个作品不限文件数，多个作品共用 50 文件预算；统一返回逐作品列表 |
+| `media_hunter_download_url` | 已有作品页面链接时直接下载，自动识别站点和 ID；不接受搜索页面或媒体直链 |
+| `media_hunter_self_check` | 检查凭证与 API/首页连通性，每站最多 45 秒；逐站查看 `data.<站点>.ok/detail`，不下载文件 |
+
+例如先调用 `media_hunter_search`：
+
+```json
+{"site": "pixiv", "query": "風景", "rating": "safe", "limit": 5}
+```
+
+搜索到作品后可以直接展示结果；仅在需要保存媒体时调用下载工具。将返回结果的 `data.posts[].id` **原样作为字符串**放入 `media_hunter_download` 的 `post_ids` 数组，单个作品也使用数组：
+
+```json
+{"site": "pixiv", "post_ids": ["123"]}
+```
+
+多个作品改为 `"post_ids": ["123", "456"]`。已有 `data.posts[].url` 可直接交给 `media_hunter_download_url` 的 `url`，无需再搜索。
+
+ID 必须来自同一站点；输入最多 50 项，重复 ID 按输入顺序去重，整批格式先校验再联网。**去重后一个 ID 下载整部作品，不限文件数；多个 ID 共用 50 个文件目标的预算，复用和失败目标也计入预算。** 超过剩余预算的作品整部跳过；模型可根据用户目标、页数及 `skipped` 原因决定拆分调用，大画廊单独用 `post_ids: [该 ID]` 下载。不同站点、表里站或原图设置需分次调用。这些决策规则也写在 MCP 工具及参数说明中。
+
+无论单个还是多个，`data.requested_ids` 都是去重后的 ID 列表，`data.downloaded` 都是逐作品结果数组（每项含 `id`、`post`、`files` 等，也可能部分失败），`errors` 和 `skipped` 分别记录失败、未处理的 ID 及原因。下载不接受 `query`、`rating`、`limit` 或 `page`，这些条件只在搜索时使用。按链接下载仍直接返回 `data.files` 等单作品结果。
+
+各工具通过参数 Schema 暴露说明、默认值和范围；下载结果的 `files[].path` 与 `sidecar_path` 均为运行服务器的本地路径。操作失败时 `success=false` / MCP `isError=true`；部分下载失败仍保留 `data` 中的文件清单。登录或额度错误先处理原因，其他失败可按原 ID 重试补齐，无需重新搜索。
 
 `site` 使用 `e621`、`rule34`、`ehentai` 或 `pixiv`；ExHentai 同样使用 `ehentai`，可通过每次调用的 `use_exhentai` 参数切换。
 
-搜索 `page` 从 1 开始。`limit` 上限：e621 320、rule34 1000、E-Hentai 100、Pixiv 30；批量下载的 `limit` 还限制为最多 50 个作品。E-Hentai 使用实际的 Next 游标顺序翻页，最多 100 页；深页查询比第一页慢。返回的是站点当前页中符合条件的结果，过滤后可能少于 limit。
+搜索 `page` 从 1 开始。`limit` 上限：e621 320、rule34 1000、E-Hentai 100、Pixiv 30。E-Hentai 使用实际的 Next 游标顺序翻页，最多 100 页；深页查询比第一页慢。返回的是站点当前页中符合条件的结果，过滤后可能少于 limit。
 
 `rating` 语义：e621 为 s/q/e 或完整名称；rule34 为 safe/questionable/explicit；Pixiv 为 all（不限）、safe、r18、r18g，后面三种精确匹配；E-Hentai 为画廊分类，例如 Manga、Non-H。`min_score` 对 Pixiv 表示收藏数，对 E-Hentai 表示星级。
 
-下载工具的 `timeout` 是覆盖排队、搜索/详情、图片页解析、传输与合成的总秒数。省略表示不限制总时长；网络操作仍使用 `[network].timeout`。
+下载工具的 `timeout` 是覆盖排队、作品详情、图片页解析、传输与合成的总秒数。省略表示不限制总时长；网络操作仍使用 `[network].timeout`。
 
 ### E 站：选择表站、里站和原图
 
-搜索、详情、下载和检查工具均支持 `use_exhentai`：`true` 使用里站 ExHentai，`false` 使用表站 E-Hentai；省略时按配置决定，配置缺省及模板默认均为里站。`download_url` 是例外：省略时遵循链接域名，也可以显式覆盖。选择里站需要账号 Cookie，不会在失败时悄悄改用表站。旧配置中明确设置的 `use_exhentai = false` 仍然有效。
+搜索、详情、下载和检查工具均支持 `use_exhentai`：`true` 使用里站 ExHentai，`false` 使用表站 E-Hentai；省略时按配置决定，配置缺省及模板默认均为里站。`media_hunter_download_url` 是例外：省略时遵循链接域名，也可以显式覆盖。选择里站需要账号 Cookie，不会在失败时悄悄改用表站。旧配置中明确设置的 `use_exhentai = false` 仍然有效。
 
-三个下载工具还支持 `original`：默认 `false` 下载页面图，设为 `true` 使用页面提供的原图入口。`allow_original = true` 只表示允许这一选择，不会让每次调用自动下载原图；设为 `false` 时原图请求会在联网前被拒绝。这两个工具参数仅适用于 E 站。
+两个下载工具还支持 `original`：默认 `false` 下载页面图，设为 `true` 使用页面提供的原图入口。`allow_original = true` 只表示允许这一选择，不会让每次调用自动下载原图；设为 `false` 时原图请求会在联网前被拒绝。这两个工具参数仅适用于 E 站。
 
-例如，模型可调用 `search` 搜索表站：
+例如，模型可调用 `media_hunter_search` 搜索表站：
 
 ```json
 {"site": "ehentai", "query": "landscape", "rating": "Non-H", "limit": 5, "use_exhentai": false}
 ```
 
-调用 `download_post` 从里站下载指定画廊原图（将 `gid/token` 换成实际 ID）：
+调用 `media_hunter_download` 从里站下载指定画廊原图（将 `gid/token` 换成实际 ID）：
 
 ```json
-{"site": "ehentai", "post_id": "gid/token", "use_exhentai": true, "original": true, "timeout": 300}
+{"site": "ehentai", "post_ids": ["gid/token"], "use_exhentai": true, "original": true, "timeout": 300}
 ```
 
 原图下载可能消耗 FIQ（原图额度）或 GP，具体由账号权益、画廊时间和站点规则决定，参见 [E-Hentai 官方下载说明](https://ehwiki.org/wiki/Downloading)。登录或额度错误会停止后续下载；原图入口失败时不会自动退回缩放图。没有独立原图入口、且页面未标注缩放的图片，使用页面直接提供的源图。
@@ -169,11 +209,11 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 - 作品下的 JSON sidecar 保存元数据、文件清单、SHA-256 和失败页；ugoira 的帧顺序和延时也会保存。
 - E-Hentai 每本画廊有独立目录，即使指定相同 `subdir` 也不会覆盖另一本的页码文件。
 - E-Hentai 图片页在每张实际下载前解析；单页失败会记录并继续其他页。认证或配额错误会停止当前作品未开始的下载，也会停止批量任务的后续作品。
-- 部分失败时返回 `success: false`、`error.type: partial_download`，同时在 `data` 返回已完成文件及错误。批量下载还返回 `skipped` 和 `stop_reason`。
-- 超时后已完成文件保留；取消中的作品清单写入 sidecar，批量结果的 `total_files` 统计已返回的作品结果，不包含取消中作品的残余完成文件。
+- 部分失败时返回 `success: false`、`error.type: partial_download`，同时在 `data` 返回已完成文件及错误。按 ID 下载无论单个还是多个，还返回 `skipped` 和 `stop_reason`。
+- 超时后已完成文件保留；取消中的作品清单写入 sidecar，按 ID 下载结果的 `total_files` 统计已返回的作品结果，不包含取消中作品的残余完成文件。
 - 默认在当前输出目录中校验清单的作品身份、文件来源、大小和 SHA-256，复用校验通过的文件，只补下载缺失或损坏的文件。E-Hentai 复用已有页时也会跳过该页的图片地址解析。
 - MCP 下载工具设置 `overwrite=true`，或命令行加 `--overwrite`，可以强制重新下载。现有文件仍只在新下载成功后被替换。没有哈希的旧版清单会重新下载一次，建立新版校验记录。
-- `files` 包括新下载和复用文件，文件项的 `reused` 表示是否复用；`new_files`、`reused_files` 分别计数。批量的 `total_files` 包括两者；`attempted_files` 是进入处理流程的目标数，包含复用目标，仍受 50 文件预算约束。
+- `files` 包括新下载和复用文件，文件项的 `reused` 表示是否复用；`new_files`、`reused_files` 分别计数。按 ID 下载的 `total_files` 包括两者；`attempted_files` 是进入处理流程的目标数，包含复用及失败目标，仅在去重后多个 ID 时受 50 文件预算约束。
 - 取消或重试失败会保留先前清单的文件索引；索引不替代校验，下次复用仍要检查实际文件。续传以完整文件为单位，不保留中断文件的部分字节；跨日期目录、作者目录变更及不同 `subdir` 之间不自动查重。
 - ugoira 的 MP4 输出保留毫秒级帧时长；GIF 按格式限制四舍五入到 10 毫秒、最短 10 毫秒。播放器对短 GIF 帧的显示可能另有限制；精确时序优先使用 MP4 或原始 ZIP。
 
@@ -187,13 +227,15 @@ uv run media-hunter search e621 "landscape" --rating safe --limit 5
 uv run media-hunter search pixiv "風景" --rating safe --limit 5
 uv run media-hunter get pixiv "作品ID"
 uv run --extra animation media-hunter download-url "作品页面URL" --timeout 300
-uv run media-hunter download-search e621 "landscape" --rating safe --limit 3 --timeout 180
+uv run media-hunter download-posts e621 "作品ID1" "作品ID2" --timeout 180
 uv run --extra animation media-hunter download pixiv "作品ID" --overwrite
 uv run media-hunter search ehentai "landscape" --no-use-exhentai --limit 5
 uv run media-hunter download ehentai "gid/token" --use-exhentai --original --timeout 300
 ```
 
 将示例中的 `作品ID` 替换为实际数字 ID，将 `作品页面URL` 替换为完整页面链接；E-Hentai 的 ID 使用 `"gid/token"` 格式。
+
+命令行保留 `download` 单作品快捷命令；`download-posts` 接受一个或多个 ID，文件预算及列表返回格式与 MCP `media_hunter_download` 一致。
 
 指定配置：`uv run media-hunter --config "配置文件路径" check`。业务结果输出 JSON；操作失败、部分完成或任一站点检查失败时退出码为 1，启动/配置失败为 2。`--help` 和命令行参数解析错误输出普通文本；Ctrl+C 中断的退出码为 130。配置校验错误会指出字段，例如 `network.timeout`，不回显该字段中的凭证或其他值。
 
@@ -205,7 +247,7 @@ uv run ruff check src tests
 uv run ruff format --check src tests
 ```
 
-测试默认不访问外部站点，覆盖 OAuth 续期、站点解析、下载中断、共享重试预算、取消清理、哈希复用、站点队列、文件上限、镜像画廊分页、表里站并发隔离、原图重定向与额度错误、原图独立复用、真实 ffmpeg 逐帧时序、新旧版 stdio MCP 子进程及 Streamable HTTP 请求。手动联网检查：
+测试默认不访问外部站点，覆盖 OAuth 续期、站点解析、下载中断、搜索与下载隔离、明确 ID 批量处理、共享重试预算、取消清理、哈希复用、站点队列、文件上限、镜像画廊分页、表里站并发隔离、原图重定向与额度错误、原图独立复用、真实 ffmpeg 逐帧时序、新旧版 stdio MCP 子进程及 Streamable HTTP 请求。手动联网检查：
 
 ```powershell
 uv run --extra animation python tests/live_smoke.py

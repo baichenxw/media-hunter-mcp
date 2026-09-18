@@ -24,19 +24,19 @@ from media_mcp.service import MediaService
 
 
 class FakeAdapter:
-    name = "fake"
+    name = "e621"
 
     def __init__(self):
-        self.posts = [Post(site="fake", id="1", url="https://fake.example/1")]
+        self.posts = [Post(site="e621", id="1", url="https://fake.example/1")]
         self.targets_count = 1
 
     async def search(self, query, **kwargs):
         return self.posts
 
     async def get_post(self, post_id):
-        if post_id == "missing":
+        if post_id == "404":
             raise AuthError("凭证失效", "更新凭证")
-        return self.posts[0]
+        return next(post for post in self.posts if post.id == post_id)
 
     async def get_download_targets(self, post):
         return [
@@ -69,16 +69,16 @@ class FakeDownloader:
 @pytest.fixture
 async def service(tmp_path):
     service = MediaService(Config(download_root=tmp_path))
-    service.adapters = {"fake": FakeAdapter()}
+    service.adapters = {"e621": FakeAdapter()}
     service.downloader = FakeDownloader(tmp_path)
     yield service
     await service.close()
 
 
 async def test_search_and_auth_envelopes(service):
-    result = await service.execute("search", site="fake", query="q")
+    result = await service.execute("search", site="e621", query="q")
     assert result["success"] and result["data"]["posts"][0]["id"] == "1"
-    result = await service.execute("get_post", site="fake", post_id="missing")
+    result = await service.execute("get_post", site="e621", post_id="404")
     assert result["error"]["type"] == "auth"
 
 
@@ -92,7 +92,7 @@ async def test_url_route_and_unknown(service):
     "options", [{"limit": 0}, {"page": 0}, {"min_score": float("nan")}, {"limit": -1}]
 )
 async def test_validate_before_network(service, options):
-    result = await service.execute("search", site="fake", query="q", **options)
+    result = await service.execute("search", site="e621", query="q", **options)
     assert result["error"]["type"] == "validation"
 
 
@@ -111,19 +111,21 @@ async def test_timeout_includes_metadata_and_cancels(service):
         finally:
             cancelled.set()
 
-    service.adapters["fake"].get_post = slow
+    service.adapters["e621"].get_post = slow
     started = time.monotonic()
-    result = await service.execute("download_post", site="fake", post_id="1", timeout=0.03)
+    result = await service.execute("download_post", site="e621", post_id="1", timeout=0.03)
     assert result["error"]["type"] == "timeout"
     assert cancelled.is_set() and time.monotonic() - started < 1
     assert not service.downloader.calls
 
 
 async def test_batch_never_exceeds_file_budget(service):
-    adapter = service.adapters["fake"]
+    adapter = service.adapters["e621"]
     adapter.targets_count = 30
-    adapter.posts = [Post(site="fake", id=str(i), url="u") for i in range(3)]
-    result = await service.execute("download_search", site="fake", query="q")
+    adapter.posts = [Post(site="e621", id=str(i), url="u") for i in range(3)]
+    result = await service.execute(
+        "download_posts", site="e621", post_ids=[p.id for p in service.adapters["e621"].posts]
+    )
     assert result["data"]["total_files"] == 30
     assert service.downloader.calls == [30]
     assert len(result["data"]["skipped"]) == 2
@@ -131,24 +133,126 @@ async def test_batch_never_exceeds_file_budget(service):
 
 
 async def test_large_gallery_skipped_before_resolving(service):
-    adapter = service.adapters["fake"]
+    adapter = service.adapters["e621"]
     adapter.posts[0].page_count = 100
+    adapter.posts.append(Post(site="e621", id="2", url="u", page_count=100))
 
     async def never(post):
         raise AssertionError("should skip before resolving")
 
     adapter.get_download_targets = never
-    result = await service.execute("download_search", site="fake", query="q")
-    assert len(result["data"]["skipped"]) == 1
+    result = await service.execute(
+        "download_posts", site="e621", post_ids=[p.id for p in service.adapters["e621"].posts]
+    )
+    assert len(result["data"]["skipped"]) == 2
     assert result["data"]["errors"] == []
 
 
-async def test_batch_timeout_covers_search(service):
+@pytest.mark.parametrize("post_ids", [["1"], ["1", "1"]])
+@pytest.mark.parametrize("page_count", [1, 100])
+async def test_mcp_single_unique_id_downloads_entire_large_gallery(service, post_ids, page_count):
+    adapter = service.adapters["e621"]
+    adapter.posts[0].page_count = page_count
+    adapter.targets_count = 100
+    async with Client(create_server(service=service)) as client:
+        result = await client.call_tool(
+            "media_hunter_download", {"site": "e621", "post_ids": post_ids}, timeout=5
+        )
+    data = result.structured_content["data"]
+    assert data["requested_ids"] == ["1"]
+    assert len(data["downloaded"]) == 1 and data["downloaded"][0]["id"] == "1"
+    assert len(data["downloaded"][0]["files"]) == 100
+    assert data["total_files"] == data["attempted_files"] == 100
+    assert not data["errors"] and not data["skipped"] and data["complete"]
+    assert service.downloader.calls == [100]
+
+
+@pytest.mark.parametrize("reported_pages", [1, 51])
+async def test_batch_skips_oversized_work_but_downloads_later_work(service, reported_pages):
+    adapter = service.adapters["e621"]
+    adapter.posts = [
+        Post(site="e621", id="1", url="u", page_count=reported_pages),
+        Post(site="e621", id="2", url="u"),
+    ]
+    resolved = []
+
+    async def targets(post):
+        resolved.append(post.id)
+        count = 51 if post.id == "1" else 1
+        return [DownloadTarget(f"https://fake.example/{i}.jpg", f"{i}.jpg") for i in range(count)]
+
+    adapter.get_download_targets = targets
+    result = await service.execute("download_posts", site="e621", post_ids=["1", "2"])
+    data = result["data"]
+    assert not result["success"] and not data["errors"]
+    assert data["skipped"][0]["id"] == "1"
+    assert "media_hunter_download" in data["skipped"][0]["reason"]
+    assert [row["id"] for row in data["downloaded"]] == ["2"]
+    assert data["attempted_files"] == data["total_files"] == 1
+    assert resolved == (["1", "2"] if reported_pages == 1 else ["2"])
+
+
+@pytest.mark.parametrize("outcome", ["new", "reused", "failed"])
+async def test_batch_exact_budget_includes_reused_and_failed_targets(service, outcome):
+    adapter = service.adapters["e621"]
+    adapter.posts[0].page_count = adapter.targets_count = 50
+    seen = []
+    lookup = adapter.get_post
+
+    async def get_post(post_id):
+        seen.append(post_id)
+        return await lookup(post_id)
+
+    async def download(post, targets, subdir=None, **kwargs):
+        files = [
+            DownloadedFile(t.filename, t.page, 10, reused=outcome == "reused") for t in targets
+        ]
+        errors = []
+        if outcome == "failed":
+            files = []
+            errors = [{"type": "network", "message": "test"}]
+        return DownloadResult(post, "directory", files, "manifest", errors)
+
+    adapter.get_post = get_post
+    service.downloader.download = download
+    result = await service.execute("download_posts", site="e621", post_ids=["1", "2"])
+    data = result["data"]
+    assert seen == ["1"]  # 预算耗尽后，连下一作品的详情也不请求。
+    assert data["attempted_files"] == 50
+    assert data["total_files"] == (0 if outcome == "failed" else 50)
+    assert data["reused_files"] == (50 if outcome == "reused" else 0)
+    assert len(data["skipped"]) == 1 and data["skipped"][0]["id"] == "2"
+
+
+async def test_mcp_single_id_timeout_keeps_list_result(service):
+    async def slow(post_id):
+        await asyncio.sleep(10)
+
+    service.adapters["e621"].get_post = slow
+    async with Client(create_server(service=service)) as client:
+        result = await client.call_tool(
+            "media_hunter_download",
+            {"site": "e621", "post_ids": ["1"], "timeout": 0.02},
+            raise_on_error=False,
+        )
+    data = result.structured_content["data"]
+    assert result.is_error
+    assert data["requested_ids"] == ["1"] and data["downloaded"] == []
+    assert data["errors"][0]["id"] == "1" and data["errors"][0]["type"] == "timeout"
+    assert data["attempted_files"] == 0 and not service.downloader.calls
+
+
+async def test_batch_timeout_covers_metadata(service):
     async def slow(*args, **kwargs):
         await asyncio.sleep(10)
 
-    service.adapters["fake"].search = slow
-    result = await service.execute("download_search", site="fake", query="q", timeout=0.02)
+    service.adapters["e621"].get_post = slow
+    result = await service.execute(
+        "download_posts",
+        site="e621",
+        post_ids=[p.id for p in service.adapters["e621"].posts],
+        timeout=0.02,
+    )
     assert result["data"]["errors"][0]["type"] == "timeout"
     assert not result["success"]
 
@@ -158,18 +262,17 @@ async def test_mcp_lists_and_calls_tools(service, mode):
     async with Client(create_server(service=service), mode=mode) as client:
         tools = await client.list_tools()
         assert {t.name for t in tools} == {
-            "search",
-            "get_post",
-            "download_post",
-            "download_search",
-            "download_url",
-            "self_check",
+            "media_hunter_search",
+            "media_hunter_get_post",
+            "media_hunter_download",
+            "media_hunter_download_url",
+            "media_hunter_self_check",
         }
-        result = await client.call_tool("search", {"site": "fake", "query": "q"})
+        result = await client.call_tool("media_hunter_search", {"site": "e621", "query": "q"})
         assert result.structured_content["success"]
         assert result.structured_content["data"]["count"] == 1
-        check = await client.call_tool("self_check", {})
-        assert check.structured_content["data"]["fake"]["ok"]
+        check = await client.call_tool("media_hunter_self_check", {})
+        assert check.structured_content["data"]["e621"]["ok"]
 
 
 async def test_errors_redact_credentials(service):
@@ -178,8 +281,8 @@ async def test_errors_redact_credentials(service):
     async def error(*args, **kwargs):
         raise AuthError("bad api_key=SECRET")
 
-    service.adapters["fake"].search = error
-    result = await service.execute("search", site="fake", query="q")
+    service.adapters["e621"].search = error
+    result = await service.execute("search", site="e621", query="q")
     assert "SECRET" not in str(result)
 
 
@@ -198,9 +301,11 @@ async def test_real_stdio_process_from_different_working_directory(tmp_path, mod
         cwd=str(tmp_path),
     )
     async with Client(transport, timeout=15, mode=mode) as client:
-        assert len(await client.list_tools()) == 6
+        assert len(await client.list_tools()) == 5
         result = await client.call_tool(
-            "search", {"site": "unknown", "query": "test"}, raise_on_error=False
+            "media_hunter_search",
+            {"site": "e621", "query": "test", "limit": 321},
+            raise_on_error=False,
         )
         assert result.is_error
         assert result.structured_content["error"]["type"] == "validation"
@@ -208,17 +313,22 @@ async def test_real_stdio_process_from_different_working_directory(tmp_path, mod
 
 @pytest.mark.parametrize("mode", ["2026-07-28", "legacy"])
 async def test_mcp_errors_preserve_structured_partial_results(service, mode):
-    service.adapters["fake"].targets_count = 30
-    service.adapters["fake"].posts *= 2
+    service.adapters["e621"].targets_count = 30
+    service.adapters["e621"].posts = [Post(site="e621", id=str(i), url="u") for i in range(2)]
     async with Client(create_server(service=service), mode=mode) as client:
         tools = {t.name: t for t in await client.list_tools()}
-        assert tools["search"].annotations.read_only_hint is True
-        assert tools["download_post"].annotations.read_only_hint is False
-        assert tools["download_post"].annotations.destructive_hint is True
-        assert "ctx" not in tools["download_post"].input_schema["properties"]
-        assert tools["download_post"].input_schema["properties"]["overwrite"]["default"] is False
+        assert tools["media_hunter_search"].annotations.read_only_hint is True
+        assert tools["media_hunter_download"].annotations.read_only_hint is False
+        assert tools["media_hunter_download"].annotations.destructive_hint is True
+        assert "ctx" not in tools["media_hunter_download"].input_schema["properties"]
+        assert (
+            tools["media_hunter_download"].input_schema["properties"]["overwrite"]["default"]
+            is False
+        )
         partial = await client.call_tool(
-            "download_search", {"site": "fake", "query": "q"}, raise_on_error=False
+            "media_hunter_download",
+            {"site": "e621", "post_ids": ["0", "1"]},
+            raise_on_error=False,
         )
         assert partial.is_error
         data = partial.structured_content
@@ -226,11 +336,15 @@ async def test_mcp_errors_preserve_structured_partial_results(service, mode):
         assert data["error"]["type"] == "partial_download"
         assert json.loads(partial.content[0].text) == data
         invalid = await client.call_tool(
-            "search", {"site": "unknown", "query": "q"}, raise_on_error=False
+            "media_hunter_search",
+            {"site": "e621", "query": "q", "limit": 321},
+            raise_on_error=False,
         )
         assert invalid.is_error and invalid.structured_content["error"]["type"] == "validation"
         wrong_type = await client.call_tool(
-            "search", {"site": "fake", "query": "q", "limit": "2"}, raise_on_error=False
+            "media_hunter_search",
+            {"site": "e621", "query": "q", "limit": "2"},
+            raise_on_error=False,
         )
         assert wrong_type.is_error
 
@@ -244,7 +358,9 @@ async def test_mcp_download_progress_is_monotonic(service, mode):
 
     async with Client(create_server(service=service), mode=mode) as client:
         await client.call_tool(
-            "download_post", {"site": "fake", "post_id": "1"}, progress_handler=progress
+            "media_hunter_download",
+            {"site": "e621", "post_ids": ["1"]},
+            progress_handler=progress,
         )
     assert len(events) >= 3
     assert all(left[0] < right[0] for left, right in zip(events, events[1:]))
@@ -255,7 +371,7 @@ async def test_mcp_download_progress_is_monotonic(service, mode):
 @pytest.mark.parametrize("error_type", ["auth", "quota", "not_found"])
 async def test_batch_stops_only_on_site_rejection(service, error_type):
     seen = []
-    service.adapters["fake"].posts = [Post(site="fake", id=str(i), url="u") for i in range(3)]
+    service.adapters["e621"].posts = [Post(site="e621", id=str(i), url="u") for i in range(3)]
 
     async def download(post, targets, subdir=None, **kwargs):
         seen.append(post.id)
@@ -264,7 +380,9 @@ async def test_batch_stops_only_on_site_rejection(service, error_type):
         )
 
     service.downloader.download = download
-    result = await service.execute("download_search", site="fake", query="q")
+    result = await service.execute(
+        "download_posts", site="e621", post_ids=[p.id for p in service.adapters["e621"].posts]
+    )
     if error_type in {"auth", "quota"}:
         assert seen == ["0"]
         assert [p["id"] for p in result["data"]["skipped"]] == ["1", "2"]
@@ -276,14 +394,16 @@ async def test_batch_stops_only_on_site_rejection(service, error_type):
 @pytest.mark.parametrize("error", [AuthError, QuotaError])
 async def test_batch_stops_when_target_resolution_rejects_site(service, error):
     seen = []
-    service.adapters["fake"].posts *= 3
+    service.adapters["e621"].posts = [Post(site="e621", id=str(i), url="u") for i in range(3)]
 
     async def targets(post):
         seen.append(post.id)
         raise error("test rejection")
 
-    service.adapters["fake"].get_download_targets = targets
-    result = await service.execute("download_search", site="fake", query="q")
+    service.adapters["e621"].get_download_targets = targets
+    result = await service.execute(
+        "download_posts", site="e621", post_ids=[p.id for p in service.adapters["e621"].posts]
+    )
     assert len(seen) == 1 and len(result["data"]["skipped"]) == 2
 
 
@@ -296,15 +416,15 @@ async def test_different_sites_download_independently_but_same_site_queues(servi
     async def slow(post_id):
         started.set()
         await release.wait()
-        return service.adapters["fake"].posts[0]
+        return service.adapters["e621"].posts[0]
 
-    service.adapters["fake"].get_post = slow
-    task = asyncio.create_task(service.execute("download_post", site="fake", post_id="1"))
+    service.adapters["e621"].get_post = slow
+    task = asyncio.create_task(service.execute("download_post", site="e621", post_id="1"))
     try:
         await asyncio.wait_for(started.wait(), 1)
         result = await service.execute("download_post", site="other", post_id="1", timeout=0.5)
         assert result["success"]
-        queued = await service.execute("download_post", site="fake", post_id="1", timeout=0.02)
+        queued = await service.execute("download_post", site="e621", post_id="1", timeout=0.02)
         assert queued["error"]["type"] == "timeout"
     finally:
         release.set()
@@ -348,9 +468,12 @@ async def test_modern_stdio_wire_discovery_and_error(tmp_path):
         listing = await request(2, "tools/list")
         assert listing["result"]["ttlMs"] == 60000
         assert listing["result"]["cacheScope"] == "private"
-        assert len(listing["result"]["tools"]) == 6
+        assert len(listing["result"]["tools"]) == 5
         failed = await request(
-            3, "tools/call", name="search", arguments={"site": "unknown", "query": "q"}
+            3,
+            "tools/call",
+            name="media_hunter_search",
+            arguments={"site": "e621", "query": "q", "limit": 321},
         )
         assert failed["result"]["resultType"] == "complete"
         assert failed["result"]["isError"] is True
@@ -376,15 +499,15 @@ async def test_modern_streamable_http_requires_no_session(service):
                     "Accept": "application/json, text/event-stream",
                     "MCP-Protocol-Version": "2026-07-28",
                     "MCP-Method": "tools/call",
-                    "MCP-Name": "search",
+                    "MCP-Name": "media_hunter_search",
                 },
                 json={
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/call",
                     "params": {
-                        "name": "search",
-                        "arguments": {"site": "fake", "query": "q"},
+                        "name": "media_hunter_search",
+                        "arguments": {"site": "e621", "query": "q"},
                         "_meta": {
                             "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                             "io.modelcontextprotocol/clientCapabilities": {},

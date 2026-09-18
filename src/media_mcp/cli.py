@@ -18,19 +18,20 @@ def parser():
     root.add_argument("--config", help="TOML 配置文件路径")
     commands = root.add_subparsers(dest="operation", required=True)
     commands.add_parser("check", help="检查站点连通性和凭证")
-    for name in ("search", "download-search"):
-        command = commands.add_parser(name)
-        command.add_argument("site", choices=["e621", "rule34", "ehentai", "pixiv"])
-        command.add_argument("query")
-        command.add_argument("--limit", type=int, default=10)
-        command.add_argument("--rating")
-        command.add_argument("--min-score", type=float)
-        if name == "search":
-            command.add_argument("--page", type=int, default=1)
-        else:
-            command.add_argument("--subdir")
-            command.add_argument("--overwrite", action="store_true", help="强制重新下载已有文件")
-        command.add_argument("--timeout", type=float)
+    command = commands.add_parser("search", help="只搜索作品元数据，不下载文件")
+    command.add_argument("site", choices=["e621", "rule34", "ehentai", "pixiv"])
+    command.add_argument("query")
+    command.add_argument("--limit", type=int, default=10)
+    command.add_argument("--rating")
+    command.add_argument("--min-score", type=float)
+    command.add_argument("--page", type=int, default=1)
+    command.add_argument("--timeout", type=float)
+    command = commands.add_parser("download-posts", help="按明确选定的 ID 批量下载，不执行搜索")
+    command.add_argument("site", choices=["e621", "rule34", "ehentai", "pixiv"])
+    command.add_argument("post_ids", nargs="+", help="同一站点的 1–50 个作品 ID，以空格分隔")
+    command.add_argument("--subdir")
+    command.add_argument("--overwrite", action="store_true", help="强制重新下载已有文件")
+    command.add_argument("--timeout", type=float)
     for name in ("get", "download"):
         command = commands.add_parser(name)
         command.add_argument("site", choices=["e621", "rule34", "ehentai", "pixiv"])
@@ -51,7 +52,7 @@ def parser():
             default=None,
             help="E 站选里站；--no-use-exhentai 选表站，省略沿用配置（按 URL 下载时按域名）",
         )
-        if name in {"download", "download-url", "download-search"}:
+        if name in {"download", "download-url", "download-posts"}:
             command.add_argument(
                 "--original", action="store_true", help="E 站下载原图，可能消耗 FIQ/GP"
             )
