@@ -1,6 +1,13 @@
 # media-hunter-mcp
 
-搜索并下载 **e621、rule34.xxx、E-Hentai / ExHentai、Pixiv** 的作品。支持图片、视频、多图画廊及 Pixiv ugoira；提供 MCP 工具和独立命令行。
+搜索、预览并下载 **e621、rule34.xxx、E-Hentai / ExHentai、Pixiv** 的作品。支持图片、视频、多图画廊及 Pixiv ugoira；提供 MCP 工具和独立命令行。
+
+## 1.3.3 更新
+
+- 新增 `media_hunter_preview`：直接返回压缩图片内容，让视觉模型先看图，再决定是否下载。单次最多 4 个作品，每张 JPEG 最长边 640 像素、体积不超过 96 KiB。
+- 区分搜索、文字详情、图片预览和下载；补充部分失败、跳过项、本地路径与文件统计的解释。
+- 预览使用 Pillow，在服务内存中处理；更新源码后运行 `uv sync --locked`（使用动图转换时加 `--extra animation`），再重启服务、刷新客户端工具列表。已有配置可以继续使用；客户端需要将图片内容转发给支持视觉输入的模型。
+- 修复预览超时后后台压缩任务的并发限制及进度通知阻塞问题；工具说明经过真实模型选择与看图流程验证。
 
 ## 1.3.2 更新
 
@@ -80,10 +87,10 @@ Linux/macOS 将上述 `.\.venv\Scripts\` 替换为 `./.venv/bin/`，并去掉程
 也可直接从 GitHub 的版本标签安装或升级（需要 Git；此命令替代上面的本地安装命令）：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install --upgrade "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.2"
+.\.venv\Scripts\python.exe -m pip install --upgrade "media-hunter-mcp[animation] @ git+https://github.com/baichenxw/media-hunter-mcp.git@v1.3.3"
 ```
 
-直接安装不会在当前目录生成配置模板，请从 [v1.3.2 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.2/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
+直接安装不会在当前目录生成配置模板，请从 [v1.3.3 的 config.example.toml](https://github.com/baichenxw/media-hunter-mcp/blob/v1.3.3/config.example.toml) 保存模板后配置。这里使用 GitHub 源码安装，不依赖同名 PyPI 包。pip 根据 `pyproject.toml` 解析依赖，不读取 `uv.lock`；需要按锁文件安装时使用上面的 uv 方式。语法参见 [pip 官方文档](https://pip.pypa.io/en/stable/topics/vcs-support/)。
 
 接入 MCP 客户端时，将下方配置中的 `command` 改为仅含虚拟环境内 `media-mcp.exe` 绝对路径的数组，例如 `["C:/Projects/media-hunter-mcp/.venv/Scripts/media-mcp.exe"]`，并保留指向实际配置文件的 `MEDIA_HUNTER_CONFIG`。独立命令行示例则用该环境中的 `media-hunter` 替代 `uv run media-hunter`；安装时选择过 `[animation]` 后，无需再传 `--extra animation`。
 
@@ -139,7 +146,7 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 
 也支持 `MEDIA_HUNTER_TRANSPORT=http`（Streamable HTTP，默认 `/mcp` 路径）；默认监听 `127.0.0.1:8787`。可用 `MEDIA_HUNTER_HOST`、`MEDIA_HUNTER_PORT` 覆盖。`sse` 仅保留给旧客户端，新接入使用 stdio 或 Streamable HTTP。HTTP 模式未配置身份验证，应在受信任的本机环境使用。
 
-1.3.2 使用 FastMCP 4 / MCP Python SDK 2，支持 [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) 的 `server/discover`、按请求协商、`resultType` 及列表缓存字段，也兼容旧版 `initialize` 流程。传输和版本转换交给 SDK；业务代码不自行拼接协议消息。工具声明只读/写入行为、参数范围和输出 JSON Schema。工具执行失败使用 `isError=true`，同时保留 JSON 文本与 `structuredContent`，部分完成的文件清单不会丢失。列表缓存提示为 60 秒、private，不缓存下载调用结果。
+1.3.3 使用 FastMCP 4 / MCP Python SDK 2，支持 [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) 的 `server/discover`、按请求协商、`resultType` 及列表缓存字段，也兼容旧版 `initialize` 流程。传输和版本转换交给 SDK；业务代码不自行拼接协议消息。工具声明只读/写入行为、参数范围和输出 JSON Schema。工具执行失败使用 `isError=true`，同时保留 JSON 文本与 `structuredContent`，部分完成的文件清单不会丢失。列表缓存提示为 60 秒、private，不缓存下载调用结果。
 
 下载过程提供排队、详情、解析、文件完成和合成阶段的进度。只有客户端请求进度通知时才发送；消息中的页数表示当前作品进度，协议数值是单调递增的工作事件计数，总量未知时不伪造百分比。是否展示进度取决于客户端。
 
@@ -149,6 +156,7 @@ Pixiv 令牌在内存中自动续期。刷新返回的新 refresh token 会在�
 | --- | --- |
 | `media_hunter_search` | 只搜索；返回 `data.posts`（含 `site/id/url/title/page_count`）及本页 `count/page/limit`，不下载文件 |
 | `media_hunter_get_post` | 读取已知 ID 的作品详情，返回 `data` 中的元数据，不下载文件 |
+| `media_hunter_preview` | 看选定作品的实际缩略图；同站点 1–4 个 ID，返回 MCP 图片内容和 `data.previews` 对应清单，不保存媒体文件 |
 | `media_hunter_download` | 只下载明确提供的同站点 `post_ids`，不搜索；输入 1–50 个 ID，去重后一个作品不限文件数，多个作品共用 50 文件预算；统一返回逐作品列表 |
 | `media_hunter_download_url` | 已有作品页面链接时直接下载，自动识别站点和 ID；不接受搜索页面或媒体直链 |
 | `media_hunter_self_check` | 检查凭证与 API/首页连通性，每站最多 45 秒；逐站查看 `data.<站点>.ok/detail`，不下载文件 |
@@ -173,6 +181,24 @@ ID 必须来自同一站点；输入最多 50 项，重复 ID 按输入顺序去
 
 各工具通过参数 Schema 暴露说明、默认值和范围；下载结果的 `files[].path` 与 `sidecar_path` 均为运行服务器的本地路径。操作失败时 `success=false` / MCP `isError=true`；部分下载失败仍保留 `data` 中的文件清单。登录或额度错误先处理原因，其他失败可按原 ID 重试补齐，无需重新搜索。
 
+### 先看预览图再筛选
+
+搜索和详情只返回文字元数据，`preview_url` 是图片地址，不能等同于模型已看过图片。需要判断构图、颜色等画面内容时，将选定的 ID 交给预览工具：
+
+```json
+{"site": "pixiv", "post_ids": ["123", "456"]}
+```
+
+`media_hunter_preview` 按输入顺序去重，每个作品返回一张 JPEG：E 站为画廊封面，其他站为站点缩略图；多页作品只代表这一张，视频和动图仅提供静态预览。最多传 4 个 ID，更多作品分批处理；不同站点、表里站分次调用。E 站仍使用 `use_exhentai`，不提供 `original` 参数，也不会因预览失败而下载原图。
+
+图片最长边不超过 640 像素，每张 JPEG 不超过 96 KiB；Base64 编码后每张最多约 128 KiB，4 张合计最多约 512 KiB，另有少量文字。压缩体积不等于模型视觉 token 用量，实际计费取决于提供商。原始缩略图限制为 8 MiB、2000 万像素；支持 JPEG、PNG、WebP、GIF 首帧，移除 EXIF 等元数据，透明区域使用白底。
+
+返回遵循 [MCP 图片内容规范](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#image-content)：`content` 包含说明文字与 Base64 `ImageContent`，`structuredContent` 只放元数据，不重复塞入图片。`data.previews[].image_index` 从 1 开始，与实际图片顺序一致，`id` 用于后续下载；失败项没有图片。默认整批超时 45 秒，可通过 `timeout` 调整或设为 `null`；部分失败、超时仍保留已生成的图片，并在 `errors/skipped` 中说明未完成项。
+
+**客户端必须将 MCP 图片块传给支持视觉输入的模型提供商。** 服务不需要保存模型 API Key，也不会自行选择另一家提供商；仅把图片 URL 或 JSON 文本交给模型的客户端无法完成看图。若模型没有收到图片，应明确说明，不能凭标签猜测。预览工具本身不写入下载目录，客户端可能为了显示、转发而缓存图片。
+
+预览沿用 `[network].proxy`、限速和网络重试。图片请求仅访问该站点允许的图片域名，不向图片 CDN 发送账号 Cookie/API Token。Pixiv 沿用显式配置的 `image_mirror`，预览要求该镜像使用 HTTPS 默认端口，拒绝私网 IP 和本地域名；重定向也会检查来源。没有缩略图、图片不可访问或不符合限制时返回错误。只有需要保存作品时，才把筛选后的 ID 交给 `media_hunter_download`。
+
 `site` 使用 `e621`、`rule34`、`ehentai` 或 `pixiv`；ExHentai 同样使用 `ehentai`，可通过每次调用的 `use_exhentai` 参数切换。
 
 搜索 `page` 从 1 开始。`limit` 上限：e621 320、rule34 1000、E-Hentai 100、Pixiv 30。E-Hentai 使用实际的 Next 游标顺序翻页，最多 100 页；深页查询比第一页慢。返回的是站点当前页中符合条件的结果，过滤后可能少于 limit。
@@ -183,7 +209,7 @@ ID 必须来自同一站点；输入最多 50 项，重复 ID 按输入顺序去
 
 ### E 站：选择表站、里站和原图
 
-搜索、详情、下载和检查工具均支持 `use_exhentai`：`true` 使用里站 ExHentai，`false` 使用表站 E-Hentai；省略时按配置决定，配置缺省及模板默认均为里站。`media_hunter_download_url` 是例外：省略时遵循链接域名，也可以显式覆盖。选择里站需要账号 Cookie，不会在失败时悄悄改用表站。旧配置中明确设置的 `use_exhentai = false` 仍然有效。
+搜索、详情、预览、下载和检查工具均支持 `use_exhentai`：`true` 使用里站 ExHentai，`false` 使用表站 E-Hentai；省略时按配置决定，配置缺省及模板默认均为里站。`media_hunter_download_url` 是例外：省略时遵循链接域名，也可以显式覆盖。选择里站需要账号 Cookie，不会在失败时悄悄改用表站。旧配置中明确设置的 `use_exhentai = false` 仍然有效。
 
 两个下载工具还支持 `original`：默认 `false` 下载页面图，设为 `true` 使用页面提供的原图入口。`allow_original = true` 只表示允许这一选择，不会让每次调用自动下载原图；设为 `false` 时原图请求会在联网前被拒绝。这两个工具参数仅适用于 E 站。
 
@@ -210,6 +236,7 @@ ID 必须来自同一站点；输入最多 50 项，重复 ID 按输入顺序去
 - E-Hentai 每本画廊有独立目录，即使指定相同 `subdir` 也不会覆盖另一本的页码文件。
 - E-Hentai 图片页在每张实际下载前解析；单页失败会记录并继续其他页。认证或配额错误会停止当前作品未开始的下载，也会停止批量任务的后续作品。
 - 部分失败时返回 `success: false`、`error.type: partial_download`，同时在 `data` 返回已完成文件及错误。按 ID 下载无论单个还是多个，还返回 `skipped` 和 `stop_reason`。
+- `downloaded` 表示处理过的作品，不保证整部完成，须逐项查看 `complete/errors`。`skipped` 仅说明本次未处理，不能据此判断以前有没有下载文件；`total_files` 也不是磁盘文件总数。
 - 超时后已完成文件保留；取消中的作品清单写入 sidecar，按 ID 下载结果的 `total_files` 统计已返回的作品结果，不包含取消中作品的残余完成文件。
 - 默认在当前输出目录中校验清单的作品身份、文件来源、大小和 SHA-256，复用校验通过的文件，只补下载缺失或损坏的文件。E-Hentai 复用已有页时也会跳过该页的图片地址解析。
 - MCP 下载工具设置 `overwrite=true`，或命令行加 `--overwrite`，可以强制重新下载。现有文件仍只在新下载成功后被替换。没有哈希的旧版清单会重新下载一次，建立新版校验记录。
@@ -255,7 +282,11 @@ uv run --extra animation python tests/live_smoke.py
 
 联网检查会下载 e621/Pixiv 的 safe 小样、尝试 E-Hentai Non-H 小样；rule34 只检查搜索、详情与 CDN HEAD。报告和小样写入 `.validation/`，不写入日常下载根目录。
 
-代码结构：`server.py` 处理 MCP 接入与协议结果，`cli.py` 提供命令行；`service.py` 编排业务；`sites/` 负责站点协议；`network.py` 管理请求；`downloader.py` 管理校验复用、落盘与合成；`progress.py` 隔离每次调用的进度回调。新增站点时实现 `SiteAdapter` 并注册到 `MediaService`。
+预览测试使用本地生成的图片，验证实际压缩、体积和像素限制、来源检查、重定向、Cookie 隔离、部分失败与超时保留，以及两种 MCP 协议模式下的图片块传输，不将测试图片写入下载目录。
+
+2026-09-26 使用 DeepSeek Flash 真实 API 检查了新版的 19 个工具选择与结果理解场景，以及 3 条“实际 MCP 预览结果 → 视觉模型”的多轮流程。模型能识别合成图片的颜色、形状和方位，按画面选取正确作品，并遵守只预览不下载的要求；针对多余详情查询修正文案后也进行了复测。测试使用合成作品和图片，模型调用是真实请求，不执行实际下载；这不保证其他模型、提示词或客户端也有完全相同的表现。客户端自身的图片转发仍需联调。
+
+代码结构：`server.py` 处理 MCP 接入与协议结果，`cli.py` 提供命令行；`service.py` 编排业务；`sites/` 负责站点协议；`network.py` 管理请求；`preview.py` 在内存中读取和压缩预览图；`downloader.py` 管理校验复用、落盘与合成；`progress.py` 隔离每次调用的进度回调。新增站点时实现 `SiteAdapter` 并注册到 `MediaService`。
 
 ## 许可证
 

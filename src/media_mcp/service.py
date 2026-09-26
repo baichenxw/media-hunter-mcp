@@ -11,6 +11,7 @@ from .config import Config, load_config
 from .downloader import Downloader
 from .models import MediaMcpError, ToolTimeoutError, ValidationError
 from .network import Network
+from .preview import preview_post
 from .progress import ProgressCallback, progress_scope, report_progress
 from .sites.e621 import E621Adapter
 from .sites.ehentai import EHentaiAdapter
@@ -55,6 +56,7 @@ class MediaService:
             )
         }
         self._download_locks: dict[str, asyncio.Lock] = {}
+        self._preview_slots = asyncio.Semaphore(2)
 
     async def close(self):
         await self.network.close()
@@ -208,6 +210,103 @@ class MediaService:
         adapter = self.adapter(site, use_exhentai=use_exhentai)
         self._validate_id(adapter.name, post_id)
         return (await adapter.get_post(post_id)).to_dict()
+
+    async def preview_posts(
+        self, site, post_ids, *, use_exhentai=None, timeout=45.0, progress=None
+    ):
+        """返回 JSON 清单及独立的内存图片；图片字节不进入元数据或日志。"""
+        images, previews, errors, skipped = [], [], [], []
+        current_id = None
+        with progress_scope(progress):
+            try:
+                adapter = self.adapter(site, use_exhentai=use_exhentai)
+                if not isinstance(post_ids, list) or not 1 <= len(post_ids) <= 4:
+                    raise ValidationError("post_ids 必须是含 1–4 个作品 ID 的数组")
+                for post_id in post_ids:
+                    self._validate_id(adapter.name, post_id)
+                if timeout is not None and (
+                    isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0
+                ):
+                    raise ValidationError("timeout 必须为正秒数，或 null 表示不限总时长")
+                post_ids = list(dict.fromkeys(post_ids))
+                try:
+                    async with asyncio.timeout(timeout):
+                        async with self._preview_slots:
+                            for index, post_id in enumerate(post_ids):
+                                current_id = post_id
+                                try:
+                                    await report_progress(
+                                        f"{adapter.name}：读取作品 {post_id} 的预览"
+                                    )
+                                    post = await adapter.get_post(post_id)
+                                    image = await preview_post(
+                                        self.network,
+                                        post,
+                                        image_mirror=self.config.site_get("pixiv", "image_mirror")
+                                        if adapter.name == "pixiv"
+                                        else None,
+                                    )
+                                    images.append(image)
+                                    previews.append(
+                                        {
+                                            "site": adapter.name,
+                                            "id": post_id,
+                                            "image_index": len(images),
+                                            "mime_type": image.mime_type,
+                                            "width": image.width,
+                                            "height": image.height,
+                                            "size_bytes": len(image.data),
+                                            "scope": "cover"
+                                            if adapter.name == "ehentai"
+                                            else "thumbnail",
+                                            "page_count": post.page_count,
+                                            "use_exhentai": post.extra.get("use_exhentai")
+                                            if adapter.name == "ehentai"
+                                            else None,
+                                        }
+                                    )
+                                except Exception as exc:
+                                    error = self._error(exc)
+                                    errors.append({"id": post_id, **error})
+                                    if error["type"] in {"auth", "quota"}:
+                                        skipped.extend(
+                                            {"id": rest, "reason": "登录或额度错误，停止后续预览"}
+                                            for rest in post_ids[index + 1 :]
+                                        )
+                                        break
+                except TimeoutError:
+                    errors.append(
+                        {"id": current_id, "type": "timeout", "message": "预览时间预算已耗尽"}
+                    )
+                    reported = {item["id"] for item in previews + errors + skipped}
+                    skipped.extend(
+                        {"id": post_id, "reason": "预览超时，尚未处理"}
+                        for post_id in post_ids
+                        if post_id not in reported
+                    )
+                complete = not errors and not skipped
+                envelope = {
+                    "success": complete,
+                    "data": {
+                        "requested_ids": post_ids,
+                        "previews": previews,
+                        "errors": errors,
+                        "skipped": skipped,
+                        "count": len(images),
+                        "total_bytes": sum(len(image.data) for image in images),
+                        "complete": complete,
+                    },
+                }
+                if not complete:
+                    envelope["error"] = {
+                        "type": "partial_preview",
+                        "message": "部分或全部预览未完成，查看 data.errors/skipped",
+                        "hint": "已返回的图片仍可使用；未看到的作品不能据此判断画面",
+                    }
+            except Exception as exc:
+                envelope = {"success": False, "error": self._error(exc)}
+            # 返回结果本身就是完成通知；预算外不再等待客户端的进度回调。
+            return self._redact(envelope), images
 
     async def _download(self, adapter, post, subdir, targets=None, *, overwrite=False):
         await report_progress(f"{adapter.name}：解析作品 {post.id} 的下载目标")

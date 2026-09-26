@@ -264,6 +264,7 @@ async def test_mcp_lists_and_calls_tools(service, mode):
         assert {t.name for t in tools} == {
             "media_hunter_search",
             "media_hunter_get_post",
+            "media_hunter_preview",
             "media_hunter_download",
             "media_hunter_download_url",
             "media_hunter_self_check",
@@ -301,7 +302,7 @@ async def test_real_stdio_process_from_different_working_directory(tmp_path, mod
         cwd=str(tmp_path),
     )
     async with Client(transport, timeout=15, mode=mode) as client:
-        assert len(await client.list_tools()) == 5
+        assert len(await client.list_tools()) == 6
         result = await client.call_tool(
             "media_hunter_search",
             {"site": "e621", "query": "test", "limit": 321},
@@ -468,7 +469,7 @@ async def test_modern_stdio_wire_discovery_and_error(tmp_path):
         listing = await request(2, "tools/list")
         assert listing["result"]["ttlMs"] == 60000
         assert listing["result"]["cacheScope"] == "private"
-        assert len(listing["result"]["tools"]) == 5
+        assert len(listing["result"]["tools"]) == 6
         failed = await request(
             3,
             "tools/call",

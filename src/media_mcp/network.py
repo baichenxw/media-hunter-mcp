@@ -132,8 +132,14 @@ class Network:
         """一次受限速控制的网络尝试；流式传输的重试由下载器统一计数。"""
         await self._limiter(site).acquire()
         auth = kwargs.pop("auth", None)
+        follow_redirects = kwargs.pop("follow_redirects", client.follow_redirects)
+        omit_cookies = kwargs.pop("omit_cookies", False)
         request = client.build_request(method, url, **kwargs)
-        return await client.send(request, auth=auth, stream=stream)
+        if omit_cookies:
+            request.headers.pop("cookie", None)
+        return await client.send(
+            request, auth=auth, stream=stream, follow_redirects=follow_redirects
+        )
 
     async def _open(self, site, method, url, *, stream=False, allow_mirror=True, **kwargs):
         last_status = None

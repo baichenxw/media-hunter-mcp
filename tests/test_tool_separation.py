@@ -196,6 +196,7 @@ async def test_mcp_discovery_is_unambiguous_and_search_to_download_flow(service,
                 for name in (
                     "search",
                     "get_post",
+                    "preview",
                     "download",
                     "download_url",
                     "self_check",
