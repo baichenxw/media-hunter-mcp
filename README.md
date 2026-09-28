@@ -2,42 +2,6 @@
 
 搜索、预览并下载 **e621、rule34.xxx、E-Hentai / ExHentai、Pixiv** 的作品。支持图片、视频、多图画廊及 Pixiv ugoira；提供 MCP 工具和独立命令行。
 
-## 1.3.3 更新
-
-- 新增 `media_hunter_preview`：直接返回压缩图片内容，让视觉模型先看图，再决定是否下载。单次最多 4 个作品，每张 JPEG 最长边 640 像素、体积不超过 96 KiB。
-- 区分搜索、文字详情、图片预览和下载；补充部分失败、跳过项、本地路径与文件统计的解释。
-- 预览使用 Pillow，在服务内存中处理；更新源码后运行 `uv sync --locked`（使用动图转换时加 `--extra animation`），再重启服务、刷新客户端工具列表。已有配置可以继续使用；客户端需要将图片内容转发给支持视觉输入的模型。
-- 修复预览超时后后台压缩任务的并发限制及进度通知阻塞问题；工具说明经过真实模型选择与看图流程验证。
-
-## 1.3.2 更新
-
-- MCP 工具统一使用 `media_hunter_` 前缀，减少与其他服务重名；搜索与下载彻底分开，搜索只返回元数据。
-- 单作品和多作品下载统一为 `media_hunter_download`，使用 `post_ids` 数组并返回逐作品列表。去重后一个作品不限文件数，多个作品共用 50 文件预算。
-- 补全工具说明、参数约束和输出结构，明确表里站、原图、分组下载、额度、超时与重试规则，供模型根据任务自行决策。
-
-### 从 1.3.1 升级
-
-**本版调整了 MCP 工具名称和按 ID 下载的参数、返回结构。** 升级后重启 MCP 服务并刷新客户端工具列表；写死旧工具名的提示词或工作流需按下表迁移。已有 `config.toml` 可继续使用，E 站的表里站和原图配置保持有效。
-
-| 1.3.1 工具 | 1.3.2 对应调用 |
-| --- | --- |
-| `search` | `media_hunter_search`，只搜索元数据 |
-| `get_post` | `media_hunter_get_post`，继续使用 `post_id` |
-| `download_post` | `media_hunter_download`，将 `post_id` 改为 `post_ids: [该 ID]`；文件清单改读 `data.downloaded[].files` |
-| `download_search` | 先 `media_hunter_search`，选定结果后再 `media_hunter_download`；不再搜索后自动下载 |
-| `download_url` | `media_hunter_download_url`，继续使用 `url`，文件清单仍为 `data.files` |
-| `self_check` | `media_hunter_self_check` |
-
-旧 MCP 名称不再注册。曾使用开发版 `media_hunter_download_post` / `media_hunter_download_posts` 的调用也统一改为 `media_hunter_download`。命令行移除 `download-search`，改为先 `search`、再用 `download-posts` 下载选定 ID；`download` 和 `download-url` 保留。
-
-## 1.3.1 更新
-
-- E 站支持每次调用选择表站/里站；默认使用里站，按链接下载时默认遵循链接域名。
-- 下载工具新增 `original=true` 原图选项，配置默认允许使用；页面图与原图分别保存和校验复用。
-- 表站和里站代理分别使用 `mirror_base`、`exhentai_mirror_base`；原图入口的登录或额度错误会停止后续下载。
-
-从 1.3.0 升级后，保留自己的 `config.toml`，按下文检查 E 站开关与代理项，并重启 MCP 服务以刷新工具参数。已有配置中显式指定的表站选择仍然有效。
-
 ## 快速开始
 
 以下使用 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。首次获取项目：
@@ -283,8 +247,6 @@ uv run --extra animation python tests/live_smoke.py
 联网检查会下载 e621/Pixiv 的 safe 小样、尝试 E-Hentai Non-H 小样；rule34 只检查搜索、详情与 CDN HEAD。报告和小样写入 `.validation/`，不写入日常下载根目录。
 
 预览测试使用本地生成的图片，验证实际压缩、体积和像素限制、来源检查、重定向、Cookie 隔离、部分失败与超时保留，以及两种 MCP 协议模式下的图片块传输，不将测试图片写入下载目录。
-
-2026-09-26 使用 DeepSeek Flash 真实 API 检查了新版的 19 个工具选择与结果理解场景，以及 3 条“实际 MCP 预览结果 → 视觉模型”的多轮流程。模型能识别合成图片的颜色、形状和方位，按画面选取正确作品，并遵守只预览不下载的要求；针对多余详情查询修正文案后也进行了复测。测试使用合成作品和图片，模型调用是真实请求，不执行实际下载；这不保证其他模型、提示词或客户端也有完全相同的表现。客户端自身的图片转发仍需联调。
 
 代码结构：`server.py` 处理 MCP 接入与协议结果，`cli.py` 提供命令行；`service.py` 编排业务；`sites/` 负责站点协议；`network.py` 管理请求；`preview.py` 在内存中读取和压缩预览图；`downloader.py` 管理校验复用、落盘与合成；`progress.py` 隔离每次调用的进度回调。新增站点时实现 `SiteAdapter` 并注册到 `MediaService`。
 
